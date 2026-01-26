@@ -661,15 +661,33 @@ export namespace MessageV2 {
     )
   }
 
-  export const stream = fn(Identifier.schema("session"), async function* (sessionID) {
-    const list = await Array.fromAsync(await Storage.list(["message", sessionID]))
-    for (let i = list.length - 1; i >= 0; i--) {
-      yield await get({
-        sessionID,
-        messageID: list[i][2],
-      })
-    }
-  })
+  export const stream = fn(
+    z.union([
+      Identifier.schema("session"),
+      z.object({
+        sessionID: Identifier.schema("session"),
+        ascending: z.boolean().optional(),
+      }),
+    ]),
+    async function* (input) {
+      const sessionID = typeof input === "string" ? input : input.sessionID
+      const ascending = typeof input === "object" && input.ascending
+
+      const list = await Array.fromAsync(await Storage.list(["message", sessionID]))
+
+      if (ascending) {
+        // Oldest-first (chronological order)
+        for (let i = 0; i < list.length; i++) {
+          yield await get({ sessionID, messageID: list[i][2] })
+        }
+      } else {
+        // Newest-first (default, for pagination loading older messages)
+        for (let i = list.length - 1; i >= 0; i--) {
+          yield await get({ sessionID, messageID: list[i][2] })
+        }
+      }
+    },
+  )
 
   export const parts = fn(Identifier.schema("message"), async (messageID) => {
     const result = [] as MessageV2.Part[]

@@ -1,4 +1,5 @@
 import { Slug } from "@opencode-ai/util/slug"
+import { Binary } from "@opencode-ai/util/binary"
 import path from "path"
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
@@ -9,7 +10,6 @@ import { Config } from "../config/config"
 import { Flag } from "../flag/flag"
 import { Identifier } from "../id/id"
 import { Installation } from "../installation"
-
 import { Storage } from "../storage/storage"
 import { Log } from "../util/log"
 import { MessageV2 } from "./message-v2"
@@ -18,7 +18,6 @@ import { SessionPrompt } from "./prompt"
 import { fn } from "@/util/fn"
 import { Command } from "../command"
 import { Snapshot } from "@/snapshot"
-
 import type { Provider } from "@/provider/provider"
 import { PermissionNext } from "@/permission/next"
 import { Global } from "@/global"
@@ -317,13 +316,97 @@ export namespace Session {
     z.object({
       sessionID: Identifier.schema("session"),
       limit: z.number().optional(),
+      before: Identifier.schema("message").optional(),
+      after: Identifier.schema("message").optional(),
+      oldest: z.boolean().optional(),
     }),
     async (input) => {
-      const result = [] as MessageV2.WithParts[]
-      for await (const msg of MessageV2.stream(input.sessionID)) {
-        if (input.limit && result.length >= input.limit) break
-        result.push(msg)
+      // Mutual exclusion validation (fail-fast before I/O)
+      if (input.before && input.after) {
+        throw new Error("Cannot specify both 'before' and 'after' cursors")
       }
+      if (input.oldest && (input.before || input.after)) {
+        throw new Error("Cannot use 'oldest' with 'before' or 'after' cursors")
+      }
+
+      const limit = input.limit === 0 ? undefined : input.limit
+
+      const list = await Storage.list(["message", input.sessionID])
+      const ids = list.map((x) => x[2]).filter((x): x is string => typeof x === "string")
+
+      const collect = async (start: number, step: 1 | -1) => {
+        const results = [] as MessageV2.WithParts[]
+        const failures = [] as unknown[]
+        const state = { attempted: 0, index: start }
+        const inRange = () => (step === 1 ? state.index < ids.length : state.index >= 0)
+
+        while (inRange()) {
+          if (limit !== undefined && results.length >= limit) break
+          const remaining = limit !== undefined ? limit - results.length : 100
+          const batchSize = limit !== undefined ? Math.min(remaining, 100) : 100
+          const batchIds: string[] = []
+
+          while (batchIds.length < batchSize && inRange()) {
+            const id = ids[state.index]
+            state.index += step
+            if (id) batchIds.push(id)
+          }
+
+          if (batchIds.length === 0) break
+          state.attempted += batchIds.length
+
+          const settled = await Promise.allSettled(
+            batchIds.map((id) => MessageV2.get({ sessionID: input.sessionID, messageID: id })),
+          )
+
+          for (const item of settled) {
+            if (item.status === "fulfilled") {
+              results.push(item.value)
+            } else {
+              failures.push(item.reason)
+            }
+          }
+        }
+
+        if (failures.length > 0) {
+          log.warn("pagination: skipped failed message fetches", {
+            count: failures.length,
+            sessionID: input.sessionID,
+            reasons: failures.map((r: any) => r?.message ?? "unknown"),
+          })
+        }
+
+        if (results.length === 0 && state.attempted > 0) {
+          throw new Error(
+            `Failed to fetch ${state.attempted} messages for session ${input.sessionID} (${results.length} succeeded)`,
+          )
+        }
+
+        return results
+      }
+
+      // Handle oldest=true: iterate from oldest to newest
+      if (input.oldest) {
+        return collect(0, 1)
+      }
+
+      if (input.after) {
+        const cursorIndex = Binary.lowerBound(ids, input.after)
+        if (ids[cursorIndex] !== input.after) {
+          log.warn("pagination: cursor not found in session", { cursor: input.after, sessionID: input.sessionID })
+        }
+        const start = ids[cursorIndex] === input.after ? cursorIndex + 1 : cursorIndex
+
+        return collect(start, 1)
+      }
+
+      const cursorIndex = input.before ? Binary.lowerBound(ids, input.before) : -1
+      if (input.before && ids[cursorIndex] !== input.before) {
+        log.warn("pagination: cursor not found in session", { cursor: input.before, sessionID: input.sessionID })
+      }
+      const start = input.before ? cursorIndex - 1 : ids.length - 1
+
+      const result = await collect(start, -1)
       result.reverse()
       return result
     },
