@@ -199,6 +199,9 @@ export function Session() {
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", true)
+  const [nearTop, setNearTop] = createSignal(false)
+  const [nearBottom, setNearBottom] = createSignal(false)
+  const BOUNDARY_THRESHOLD = 20
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -633,6 +636,7 @@ export function Session() {
       hidden: true,
       onSelect: (dialog) => {
         scroll.scrollBy(-scroll.height / 2)
+        setTimeout(loadOlder, 0)
         dialog.clear()
       },
     },
@@ -644,6 +648,7 @@ export function Session() {
       hidden: true,
       onSelect: (dialog) => {
         scroll.scrollBy(scroll.height / 2)
+        setTimeout(loadNewer, 0)
         dialog.clear()
       },
     },
@@ -655,6 +660,7 @@ export function Session() {
       disabled: true,
       onSelect: (dialog) => {
         scroll.scrollBy(-1)
+        setTimeout(loadOlder, 0)
         dialog.clear()
       },
     },
@@ -666,6 +672,7 @@ export function Session() {
       disabled: true,
       onSelect: (dialog) => {
         scroll.scrollBy(1)
+        setTimeout(loadNewer, 0)
         dialog.clear()
       },
     },
@@ -677,6 +684,7 @@ export function Session() {
       hidden: true,
       onSelect: (dialog) => {
         scroll.scrollBy(-scroll.height / 4)
+        setTimeout(loadOlder, 0)
         dialog.clear()
       },
     },
@@ -688,6 +696,7 @@ export function Session() {
       hidden: true,
       onSelect: (dialog) => {
         scroll.scrollBy(scroll.height / 4)
+        setTimeout(loadNewer, 0)
         dialog.clear()
       },
     },
@@ -1032,7 +1041,7 @@ export function Session() {
                 <text fg={theme.textMuted}>Loading older messages...</text>
               </box>
             </Show>
-            <Show when={!paging()?.loading && paging()?.hasOlder}>
+            <Show when={!paging()?.loading && paging()?.hasOlder && nearTop()}>
               <box flexShrink={0} paddingLeft={1}>
                 <text fg={theme.textMuted}>(scroll up for more)</text>
               </box>
@@ -1046,16 +1055,24 @@ export function Session() {
             <scrollbox
               ref={(r) => (scroll = r)}
               onMouseScroll={() => {
+                setNearTop(scroll.scrollTop <= BOUNDARY_THRESHOLD)
+                setNearBottom(scroll.scrollHeight - scroll.scrollTop - scroll.viewport.height <= BOUNDARY_THRESHOLD)
                 loadOlder()
                 loadNewer()
               }}
               onKeyDown={(e) => {
                 // Standard scroll triggers incremental load
                 if (["up", "pageup", "home"].includes(e.name)) {
-                  setTimeout(loadOlder, 0)
+                  setTimeout(() => {
+                    setNearTop(scroll.scrollTop <= BOUNDARY_THRESHOLD)
+                    loadOlder()
+                  }, 0)
                 }
                 if (["down", "pagedown", "end"].includes(e.name)) {
-                  setTimeout(loadNewer, 0)
+                  setTimeout(() => {
+                    setNearBottom(scroll.scrollHeight - scroll.scrollTop - scroll.viewport.height <= BOUNDARY_THRESHOLD)
+                    loadNewer()
+                  }, 0)
                 }
               }}
               viewportCulling={true}
@@ -1176,7 +1193,7 @@ export function Session() {
                 <text fg={theme.textMuted}>Loading newer messages...</text>
               </box>
             </Show>
-            <Show when={!paging()?.loading && paging()?.hasNewer}>
+            <Show when={!paging()?.loading && paging()?.hasNewer && nearBottom()}>
               <box flexShrink={0} paddingLeft={1}>
                 <text fg={theme.textMuted}>(scroll down for more)</text>
               </box>

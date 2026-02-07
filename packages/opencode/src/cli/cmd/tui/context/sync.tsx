@@ -619,13 +619,21 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             )
           } catch (e) {
             const page = store.message_page[sessionID]
+            const msg =
+              e instanceof Error
+                ? e.message
+                : typeof e === "object" && e !== null && "message" in e
+                  ? String((e as Record<string, unknown>).message)
+                  : typeof e === "string"
+                    ? e
+                    : "Unknown error"
             setStore("message_page", sessionID, {
               hasOlder: page?.hasOlder ?? false,
               hasNewer: page?.hasNewer ?? false,
               loading: false,
               oldest: page?.oldest,
               newest: page?.newest,
-              error: e instanceof Error ? e.message : String(e),
+              error: msg,
             })
           } finally {
             loadingGuard.delete(sessionID)
@@ -688,13 +696,21 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             )
           } catch (e) {
             const page = store.message_page[sessionID]
+            const msg =
+              e instanceof Error
+                ? e.message
+                : typeof e === "object" && e !== null && "message" in e
+                  ? String((e as Record<string, unknown>).message)
+                  : typeof e === "string"
+                    ? e
+                    : "Unknown error"
             setStore("message_page", sessionID, {
               hasOlder: page?.hasOlder ?? false,
               hasNewer: page?.hasNewer ?? false,
               loading: false,
               oldest: page?.oldest,
               newest: page?.newest,
-              error: e instanceof Error ? e.message : String(e),
+              error: msg,
             })
           } finally {
             loadingGuard.delete(sessionID)

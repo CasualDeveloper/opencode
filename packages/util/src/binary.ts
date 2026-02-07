@@ -19,6 +19,26 @@ export namespace Binary {
     return { found: false, index: left }
   }
 
+  /**
+   * Find the index of the first element >= id (lower bound).
+   * Returns array.length if all elements are less than id.
+   */
+  export function lowerBound(array: string[], id: string): number {
+    let left = 0
+    let right = array.length
+
+    while (left < right) {
+      const mid = Math.floor((left + right) / 2)
+      if (array[mid] < id) {
+        left = mid + 1
+      } else {
+        right = mid
+      }
+    }
+
+    return left
+  }
+
   export function insert<T>(array: T[], item: T, compare: (item: T) => string): T[] {
     const id = compare(item)
     let left = 0
