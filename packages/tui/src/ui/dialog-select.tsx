@@ -1,4 +1,5 @@
 import {
+  BoxRenderable,
   InputRenderable,
   RGBA,
   ScrollBoxRenderable,
@@ -11,10 +12,11 @@ import { useTheme, selectedForeground } from "../context/theme"
 import { entries, filter, flatMap, groupBy, pipe } from "remeda"
 import { batch, createEffect, createMemo, createSignal, For, Show, type JSX, on, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useTerminalDimensions } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import * as fuzzysort from "fuzzysort"
 import { isDeepEqual } from "remeda"
 import { useDialog, type DialogContext } from "./dialog"
+import { wrap } from "./dialog-select-wrap"
 import { Locale } from "../util/locale"
 import { getScrollAcceleration } from "../util/scroll"
 import { useTuiConfig } from "../config"
@@ -36,6 +38,7 @@ export interface DialogSelectProps<T> {
   renderFilter?: boolean
   locked?: boolean
   preserveSelection?: boolean
+  maxLines?: 1 | 2
   actions?: {
     command: string
     title: string
@@ -210,9 +213,23 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   })
 
   const dimensions = useTerminalDimensions()
-  const height = createMemo(() => Math.min(rows(), Math.floor(dimensions().height / 2) - 6))
+  const lines = createMemo(() => props.maxLines ?? 1)
+  const height = createMemo(() =>
+    Math.min(rows() + (lines() - 1) * flat().length, Math.floor(dimensions().height / 2) - 6),
+  )
 
   const selected = createMemo(() => flat()[store.selected])
+
+  createEffect(
+    on(
+      [() => dimensions().width, () => dimensions().height],
+      () => {
+        const option = selected()
+        if (option) ensureSelectionVisible(option.value)
+      },
+      { defer: true },
+    ),
+  )
 
   createEffect(
     on(
@@ -244,20 +261,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         const index = flat().findIndex((option) => isDeepEqual(option.value, previous.value))
         if (index >= 0) {
           const option = flat()[index]
-          const moved = index !== store.selected || option.category !== previous.category
           setStore("selected", index)
           selection = option
-          if (!moved) return
-          const value = option.value
-          const generation = ++visibilityGeneration
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              if (generation !== visibilityGeneration) return
-              if (!props.preserveSelection || store.filter.length > 0) return
-              if (!isDeepEqual(selected()?.value, value)) return
-              scrollToSelection(false)
-            })
-          })
+          ensureSelectionVisible(option.value, true)
           return
         }
         const next = Math.min(store.selected, flat().length - 1)
@@ -312,7 +318,6 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     if (!scroll) return
     let remaining = store.selected
     let index = 0
-    // Locate the row by position because a unique renderable ID cannot currently be ensured.
     for (const [category, options] of grouped()) {
       if (category) index++
       if (remaining < options.length) {
@@ -324,21 +329,25 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     }
     const target = scroll.getChildren()[index]
     if (!target) return
-    const y = target.y - scroll.y
-    if (center) {
-      const centerOffset = Math.floor(scroll.height / 2)
-      scroll.scrollBy(y - centerOffset)
-    } else {
-      if (y >= scroll.height) {
-        scroll.scrollBy(y - scroll.height + 1)
-      }
-      if (y < 0) {
-        scroll.scrollBy(y)
-        if (isDeepEqual(flat()[0].value, selected()?.value)) {
-          scroll.scrollTo(0)
-        }
-      }
+    if (!center || target.height > scroll.height) {
+      scroll.scrollChildIntoView(target.id)
+      return
     }
+    const y = target.y - scroll.y
+    const centerOffset = Math.floor(scroll.height / 2)
+    scroll.scrollBy(y - centerOffset)
+  }
+
+  function ensureSelectionVisible(value: T, preserve = false) {
+    const generation = ++visibilityGeneration
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (generation !== visibilityGeneration) return
+        if (preserve && (!props.preserveSelection || store.filter.length > 0)) return
+        if (!isDeepEqual(selected()?.value, value)) return
+        scrollToSelection(false)
+      })
+    })
   }
 
   function submit() {
@@ -640,6 +649,14 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                         <box
                           flexDirection="column"
                           position="relative"
+                          onSizeChange={
+                            lines() > 1
+                              ? () => {
+                                  const target = selected()
+                                  if (target) ensureSelectionVisible(target.value)
+                                }
+                              : undefined
+                          }
                           onMouseMove={() => {
                             if (props.locked) return
                             setStore("input", "mouse")
@@ -693,6 +710,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                               current={current()}
                               muted={actionFocused()}
                               gutter={option.gutter}
+                              maxLines={lines()}
                             />
                           </box>
                           <For each={option.details}>
@@ -741,15 +759,29 @@ function Option(props: {
   truncateTitle?: boolean | "left"
   gutter?: () => JSX.Element
   onMouseOver?: () => void
+  maxLines: 1 | 2
 }) {
   const { theme } = useTheme()
+  const renderer = useRenderer()
   const fg = selectedForeground(theme)
+  const [titleWidth, setTitleWidth] = createSignal(0)
+  let titleBox: BoxRenderable
   const text = createMemo(() => {
     if (props.active && !props.muted) return fg
     if (props.muted && (props.active || props.current)) return theme.textMuted
     if (props.current) return theme.primary
     return theme.text
   })
+  const title = () => {
+    if (props.titleView) return props.titleView
+    if (props.maxLines > 1) {
+      if (titleWidth() > 0) return wrap(props.title, titleWidth(), renderer.widthMethod)
+      return props.title.replace(/[^\S ]+/g, " ")
+    }
+    if (props.truncateTitle === false) return props.title
+    if (props.truncateTitle === "left") return Locale.truncateLeft(props.title, props.titleWidth ?? 61)
+    return Locale.truncate(props.title, props.titleWidth ?? 61)
+  }
 
   return (
     <>
@@ -763,24 +795,44 @@ function Option(props: {
           {props.gutter?.()}
         </box>
       </Show>
-      <text
-        flexGrow={1}
-        fg={text()}
-        attributes={props.active && !props.muted ? TextAttributes.BOLD : undefined}
-        overflow="hidden"
-        wrapMode="none"
-        paddingLeft={3}
+      <Show
+        when={props.maxLines > 1}
+        fallback={
+          <text
+            flexGrow={1}
+            fg={text()}
+            attributes={props.active && !props.muted ? TextAttributes.BOLD : undefined}
+            wrapMode="none"
+            maxHeight={1}
+            overflow="hidden"
+            paddingLeft={3}
+          >
+            {title()}
+            <Show when={props.description}>
+              <span style={{ fg: props.active && !props.muted ? fg : theme.textMuted }}> {props.description}</span>
+            </Show>
+          </text>
+        }
       >
-        {props.titleView ??
-          (props.truncateTitle === false
-            ? props.title
-            : props.truncateTitle === "left"
-              ? Locale.truncateLeft(props.title, props.titleWidth ?? 61)
-              : Locale.truncate(props.title, props.titleWidth ?? 61))}
-        <Show when={props.description}>
-          <span style={{ fg: props.active && !props.muted ? fg : theme.textMuted }}> {props.description}</span>
-        </Show>
-      </text>
+        <box
+          flexGrow={1}
+          ref={(value) => (titleBox = value)}
+          onSizeChange={() => process.nextTick(() => setTitleWidth(titleBox.width))}
+        >
+          <text
+            width="100%"
+            fg={text()}
+            attributes={props.active && !props.muted ? TextAttributes.BOLD : undefined}
+            wrapMode="word"
+            maxHeight={2}
+          >
+            {title()}
+            <Show when={props.description}>
+              <span style={{ fg: props.active && !props.muted ? fg : theme.textMuted }}> {props.description}</span>
+            </Show>
+          </text>
+        </box>
+      </Show>
       <Show when={props.footer}>
         <box flexShrink={0}>
           <text fg={props.active && !props.muted ? fg : theme.textMuted}>{props.footer}</text>

@@ -275,6 +275,7 @@ export function DialogSessionList() {
       options={options()}
       skipFilter={true}
       preserveSelection={true}
+      maxLines={2}
       current={currentSessionID()}
       onFilter={setSearch}
       onMove={() => {
