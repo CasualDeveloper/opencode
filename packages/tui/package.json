@@ -22,6 +22,7 @@
     "./context/sdk": "./src/context/sdk.tsx",
     "./context/sync": "./src/context/sync.tsx",
     "./context/theme": "./src/context/theme.tsx",
+    "./theme": "./src/theme/index.ts",
     "./context/editor": "./src/context/editor.ts",
     "./context/clipboard": "./src/context/clipboard.tsx",
     "./attention": "./src/attention.ts",

@@ -78,9 +78,15 @@ type Variant = {
 type ColorValue = HexColor | RefName | Variant | RGBA | number
 type ThemeJson = {
   defs?: Record<string, HexColor | RefName>
-  theme: Omit<Record<ThemeColor, ColorValue>, "selectedListItemText" | "backgroundMenu"> & {
+  theme: Omit<
+    Record<ThemeColor, ColorValue>,
+    "selectedListItemText" | "backgroundMenu" | "syntaxTag" | "syntaxAttribute" | "syntaxTagDelimiter"
+  > & {
     selectedListItemText?: ColorValue
     backgroundMenu?: ColorValue
+    syntaxTag?: ColorValue
+    syntaxAttribute?: ColorValue
+    syntaxTagDelimiter?: ColorValue
     thinkingOpacity?: number
   }
 }
@@ -309,7 +315,15 @@ export function resolveTheme(theme: ThemeJson, pick: "dark" | "light"): TuiTheme
 
   const resolved = Object.fromEntries(
     Object.entries(theme.theme)
-      .filter(([key]) => key !== "selectedListItemText" && key !== "backgroundMenu" && key !== "thinkingOpacity")
+      .filter(
+        ([key]) =>
+          key !== "selectedListItemText" &&
+          key !== "backgroundMenu" &&
+          key !== "thinkingOpacity" &&
+          key !== "syntaxTag" &&
+          key !== "syntaxAttribute" &&
+          key !== "syntaxTagDelimiter",
+      )
       .map(([key, value]) => [key, resolveColor(value as ColorValue)]),
   ) as Partial<Record<ThemeColor, RGBA>>
 
@@ -321,6 +335,13 @@ export function resolveTheme(theme: ThemeJson, pick: "dark" | "light"): TuiTheme
         : resolveColor(theme.theme.selectedListItemText),
     backgroundMenu:
       theme.theme.backgroundMenu === undefined ? resolved.backgroundElement! : resolveColor(theme.theme.backgroundMenu),
+    syntaxTag: theme.theme.syntaxTag === undefined ? resolved.error! : resolveColor(theme.theme.syntaxTag),
+    syntaxAttribute:
+      theme.theme.syntaxAttribute === undefined ? resolved.syntaxKeyword! : resolveColor(theme.theme.syntaxAttribute),
+    syntaxTagDelimiter:
+      theme.theme.syntaxTagDelimiter === undefined
+        ? resolved.syntaxOperator!
+        : resolveColor(theme.theme.syntaxTagDelimiter),
     thinkingOpacity: theme.theme.thinkingOpacity ?? 0.6,
   }
 }
@@ -461,6 +482,9 @@ export function generateSystem(colors: TerminalColors, pick: "dark" | "light"): 
       syntaxType: ansi.cyan,
       syntaxOperator: ansi.cyan,
       syntaxPunctuation: fg,
+      syntaxTag: ansi.red,
+      syntaxAttribute: ansi.magenta,
+      syntaxTagDelimiter: ansi.cyan,
     },
   }
 }
@@ -671,7 +695,7 @@ export async function resolveRunTheme(renderer: CliRenderer): Promise<RunTheme> 
     const footerTheme = resolveTheme(generateSystem(colors, pick), pick)
     const indexed = indexedPalette(colors, 256)
     const scrollbackTheme = quantizeTheme(footerTheme, indexed)
-    const shared = await import("@opencode-ai/tui/context/theme")
+    const shared = await import("@opencode-ai/tui/theme")
     const syntaxTheme: SharedSyntaxTheme = {
       ...scrollbackTheme,
       _hasSelectedListItemText: true,

@@ -144,6 +144,36 @@ test("keeps renderer mode when refreshed default background is unavailable", asy
   }
 })
 
+test("resolveTheme falls back to legacy XML/HTML syntax colors", () => {
+  const theme = generateSystem(terminalColors(), "dark")
+  delete theme.theme.syntaxTag
+  delete theme.theme.syntaxAttribute
+  delete theme.theme.syntaxTagDelimiter
+
+  const resolved = resolveTheme(theme, "dark")
+
+  expect(resolved.syntaxTag).toBe(resolved.error)
+  expect(resolved.syntaxAttribute).toBe(resolved.syntaxKeyword)
+  expect(resolved.syntaxTagDelimiter).toBe(resolved.syntaxOperator)
+})
+
+test("resolveTheme honors explicit XML/HTML syntax tokens", () => {
+  const syntaxTag = RGBA.fromInts(10, 20, 30)
+  const syntaxAttribute = RGBA.fromInts(40, 50, 60)
+  const syntaxTagDelimiter = RGBA.fromInts(70, 80, 90)
+  const theme = generateSystem(terminalColors(), "dark")
+
+  theme.theme.syntaxTag = syntaxTag
+  theme.theme.syntaxAttribute = syntaxAttribute
+  theme.theme.syntaxTagDelimiter = syntaxTagDelimiter
+
+  const resolved = resolveTheme(theme, "dark")
+
+  expect(resolved.syntaxTag).toBe(syntaxTag)
+  expect(resolved.syntaxAttribute).toBe(syntaxAttribute)
+  expect(resolved.syntaxTagDelimiter).toBe(syntaxTagDelimiter)
+})
+
 test("keeps dark surfaces neutral on saturated backgrounds", () => {
   const theme = resolveTheme(
     generateSystem(

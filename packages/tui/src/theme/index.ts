@@ -86,6 +86,9 @@ export type Theme = {
   readonly syntaxType: RGBA
   readonly syntaxOperator: RGBA
   readonly syntaxPunctuation: RGBA
+  readonly syntaxTag: RGBA
+  readonly syntaxAttribute: RGBA
+  readonly syntaxTagDelimiter: RGBA
   readonly thinkingOpacity: number
   _hasSelectedListItemText: boolean
 }
@@ -120,9 +123,15 @@ type ColorValue = HexColor | RefName | Variant | RGBA
 export type ThemeJson = {
   $schema?: string
   defs?: Record<string, HexColor | RefName>
-  theme: Omit<Record<ThemeColor, ColorValue>, "selectedListItemText" | "backgroundMenu"> & {
+  theme: Omit<
+    Record<ThemeColor, ColorValue>,
+    "selectedListItemText" | "backgroundMenu" | "syntaxTag" | "syntaxAttribute" | "syntaxTagDelimiter"
+  > & {
     selectedListItemText?: ColorValue
     backgroundMenu?: ColorValue
+    syntaxTag?: ColorValue
+    syntaxAttribute?: ColorValue
+    syntaxTagDelimiter?: ColorValue
     thinkingOpacity?: number
   }
 }
@@ -265,7 +274,15 @@ export function resolveTheme(theme: ThemeJson, mode: "dark" | "light") {
 
   const resolved = Object.fromEntries(
     Object.entries(theme.theme)
-      .filter(([key]) => key !== "selectedListItemText" && key !== "backgroundMenu" && key !== "thinkingOpacity")
+      .filter(
+        ([key]) =>
+          key !== "selectedListItemText" &&
+          key !== "backgroundMenu" &&
+          key !== "thinkingOpacity" &&
+          key !== "syntaxTag" &&
+          key !== "syntaxAttribute" &&
+          key !== "syntaxTagDelimiter",
+      )
       .map(([key, value]) => {
         return [key, resolveColor(value as ColorValue)]
       }),
@@ -286,6 +303,24 @@ export function resolveTheme(theme: ThemeJson, mode: "dark" | "light") {
     resolved.backgroundMenu = resolveColor(theme.theme.backgroundMenu)
   } else {
     resolved.backgroundMenu = resolved.backgroundElement
+  }
+
+  if (theme.theme.syntaxTag !== undefined) {
+    resolved.syntaxTag = resolveColor(theme.theme.syntaxTag)
+  } else {
+    resolved.syntaxTag = resolved.error
+  }
+
+  if (theme.theme.syntaxAttribute !== undefined) {
+    resolved.syntaxAttribute = resolveColor(theme.theme.syntaxAttribute)
+  } else {
+    resolved.syntaxAttribute = resolved.syntaxKeyword
+  }
+
+  if (theme.theme.syntaxTagDelimiter !== undefined) {
+    resolved.syntaxTagDelimiter = resolveColor(theme.theme.syntaxTagDelimiter)
+  } else {
+    resolved.syntaxTagDelimiter = resolved.syntaxOperator
   }
 
   // Handle thinkingOpacity - optional with default of 0.6
@@ -464,6 +499,9 @@ export function generateSystem(colors: TerminalColors, mode: "dark" | "light"): 
       syntaxType: ansiColors.cyan,
       syntaxOperator: ansiColors.cyan,
       syntaxPunctuation: fg,
+      syntaxTag: ansiColors.red,
+      syntaxAttribute: ansiColors.magenta,
+      syntaxTagDelimiter: ansiColors.cyan,
     },
   }
 }
@@ -998,19 +1036,19 @@ function getSyntaxRules(theme: Theme) {
     {
       scope: ["tag"],
       style: {
-        foreground: theme.error,
+        foreground: theme.syntaxTag,
       },
     },
     {
       scope: ["tag.attribute"],
       style: {
-        foreground: theme.syntaxKeyword,
+        foreground: theme.syntaxAttribute,
       },
     },
     {
       scope: ["tag.delimiter"],
       style: {
-        foreground: theme.syntaxOperator,
+        foreground: theme.syntaxTagDelimiter,
       },
     },
     {
