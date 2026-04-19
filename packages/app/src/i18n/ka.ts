@@ -162,6 +162,8 @@ export const dict = {
   "command.model.variant.cycle.description": "გადართვა ძალისხმევის შემდეგ დონეზე",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "მოთხოვნა",
+  "command.prompt.submit": "მოთხოვნის გაგზავნა",
+  "command.prompt.newline": "მოთხოვნაში ახალი ხაზის ჩასმა",
   "command.permissions.autoaccept.enable": "ნებართვების ავტომატური მიღება",
   "command.permissions.autoaccept.disable": "ნებართვების ავტომატური მიღების შეწყვეტა",
   "command.workspace.toggle": "სამუშაო სივრცის გადართვა",

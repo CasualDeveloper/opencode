@@ -169,6 +169,8 @@ export const dict = {
   "command.model.variant.cycle.description": "तर्क के अगले स्तर पर जाएँ",
   "command.prompt.mode.shell": "शेल",
   "command.prompt.mode.normal": "प्रॉम्प्ट",
+  "command.prompt.submit": "प्रॉम्प्ट भेजें",
+  "command.prompt.newline": "प्रॉम्प्ट में नई पंक्ति डालें",
   "command.permissions.autoaccept.enable": "अनुमतियाँ स्वतः स्वीकार करें",
   "command.permissions.autoaccept.disable": "अनुमतियाँ स्वत: स्वीकार करना बंद करें",
   "command.workspace.toggle": "वर्कस्पेस टॉगल करें",

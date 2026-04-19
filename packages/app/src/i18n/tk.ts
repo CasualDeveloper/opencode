@@ -163,6 +163,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Indiki synanyşyk derejesine geçiň",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Prompty iberiň",
+  "command.prompt.newline": "Prompta täze setir giriziň",
   "command.permissions.autoaccept.enable": "Rugsatlary awtomatiki kabul ediň",
   "command.permissions.autoaccept.disable": "Awto-kabul ediş rugsatlaryny bes ediň",
   "command.workspace.toggle": "Workspace-lary çalşyň",

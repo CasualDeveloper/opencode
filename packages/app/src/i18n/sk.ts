@@ -162,6 +162,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Prepnúť na ďalšiu úroveň úsilia",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Výzva",
+  "command.prompt.submit": "Odoslať výzvu",
+  "command.prompt.newline": "Vložiť nový riadok do výzvy",
   "command.permissions.autoaccept.enable": "Automaticky prijímať povolenia",
   "command.permissions.autoaccept.disable": "Zastaviť automatické prijímanie povolení",
   "command.workspace.toggle": "Prepnúť pracovné priestory",

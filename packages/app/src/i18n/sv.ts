@@ -163,6 +163,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Växla till nästa resonemangsnivå",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Skicka prompten",
+  "command.prompt.newline": "Infoga radbrytning i prompten",
   "command.permissions.autoaccept.enable": "Autoacceptera behörigheter",
   "command.permissions.autoaccept.disable": "Sluta att automatiskt acceptera behörigheter",
   "command.workspace.toggle": "Växla arbetsytor",

@@ -164,6 +164,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Преминете към следващото ниво на усилие",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "подкана",
+  "command.prompt.submit": "Изпращане на подкана",
+  "command.prompt.newline": "Вмъкване на нов ред в подканата",
   "command.permissions.autoaccept.enable": "Автоматично приемане на разрешения",
   "command.permissions.autoaccept.disable": "Спрете автоматичното приемане на разрешения",
   "command.workspace.toggle": "Превключване на работните пространства",

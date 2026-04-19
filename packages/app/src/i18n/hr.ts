@@ -166,6 +166,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Prijeđite na sljedeću razinu napora",
   "command.prompt.mode.shell": "Ljuska",
   "command.prompt.mode.normal": "Upit",
+  "command.prompt.submit": "Pošalji upit",
+  "command.prompt.newline": "Umetni novi redak u upit",
   "command.permissions.autoaccept.enable": "Automatsko prihvaćanje dopuštenja",
   "command.permissions.autoaccept.disable": "Zaustavi automatsko prihvaćanje dozvola",
   "command.workspace.toggle": "Uključivanje/isključivanje radnih prostora",

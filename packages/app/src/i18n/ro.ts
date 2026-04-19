@@ -162,6 +162,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Treci la următorul nivel de efort",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Solicitare",
+  "command.prompt.submit": "Trimite solicitarea",
+  "command.prompt.newline": "Inserează o linie nouă în solicitare",
   "command.permissions.autoaccept.enable": "Acceptă automat permisiunile",
   "command.permissions.autoaccept.disable": "Oprește acceptarea automată a permisiunilor",
   "command.workspace.toggle": "Comută spațiile de lucru",

@@ -174,6 +174,8 @@ export const dict = {
   "command.model.variant.cycle.description": "สลับไปยังระดับความพยายามถัดไป",
   "command.prompt.mode.shell": "เชลล์",
   "command.prompt.mode.normal": "พรอมต์",
+  "command.prompt.submit": "ส่งพรอมต์",
+  "command.prompt.newline": "แทรกบรรทัดใหม่ในพรอมต์",
   "command.permissions.autoaccept.enable": "ยอมรับสิทธิ์โดยอัตโนมัติ",
   "command.permissions.autoaccept.disable": "หยุดยอมรับสิทธิ์โดยอัตโนมัติ",
   "command.workspace.toggle": "สลับพื้นที่ทำงาน",

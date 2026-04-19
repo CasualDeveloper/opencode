@@ -175,6 +175,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Переключиться к следующему уровню усилий",
   "command.prompt.mode.shell": "Оболочка",
   "command.prompt.mode.normal": "Промпт",
+  "command.prompt.submit": "Отправить промпт",
+  "command.prompt.newline": "Вставить перенос строки в промпт",
   "command.permissions.autoaccept.enable": "Автоматически принимать разрешения",
   "command.permissions.autoaccept.disable": "Остановить автоматическое принятие разрешений",
   "command.workspace.toggle": "Переключить рабочие пространства",

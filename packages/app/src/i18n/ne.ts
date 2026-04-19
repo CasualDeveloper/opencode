@@ -163,6 +163,8 @@ export const dict: Record<string, string> = {
   "command.model.variant.cycle.description": "अर्को प्रयास स्तरमा स्विच गर्नुहोस्",
   "command.prompt.mode.shell": "शेल",
   "command.prompt.mode.normal": "प्रम्प्ट",
+  "command.prompt.submit": "प्रम्प्ट पठाउनुहोस्",
+  "command.prompt.newline": "प्रम्प्टमा नयाँ लाइन थप्नुहोस्",
   "command.permissions.autoaccept.enable": "अनुमतिहरू स्वत: स्वीकार गर्नुहोस्",
   "command.permissions.autoaccept.disable": "अनुमतिहरू स्वत: स्वीकार गर्न रोक्नुहोस्",
   "command.workspace.toggle": "कार्यस्थान टगल गर्नुहोस्",

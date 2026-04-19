@@ -162,6 +162,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Skift til næsta átaksstig",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Send prompt",
+  "command.prompt.newline": "Skjót nýggja reglu inn í promptin",
   "command.permissions.autoaccept.enable": "Sjálvvirkandi góðtaka loyvi",
   "command.permissions.autoaccept.disable": "Steðga sjálvvirkandi góðkenning av loyvum",
   "command.workspace.toggle": "Skift workspace",

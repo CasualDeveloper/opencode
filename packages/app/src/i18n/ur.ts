@@ -170,6 +170,8 @@ export const dict = {
   "command.model.variant.cycle.description": "محنت کی اگلی سطح پر جائیں۔",
   "command.prompt.mode.shell": "شیل",
   "command.prompt.mode.normal": "پرامپٹ",
+  "command.prompt.submit": "پرامپٹ بھیجیں",
+  "command.prompt.newline": "پرامپٹ میں نئی سطر داخل کریں",
   "command.permissions.autoaccept.enable": "اجازتیں خود بخود قبول کریں۔",
   "command.permissions.autoaccept.disable": "اجازتوں کو خودکار طور پر قبول کرنا بند کریں۔",
   "command.workspace.toggle": "ورک اسپیسز فعال یا غیر فعال کریں",

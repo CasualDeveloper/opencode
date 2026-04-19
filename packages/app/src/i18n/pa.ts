@@ -168,6 +168,8 @@ export const dict = {
   "command.model.variant.cycle.description": "محنت دی اگلی سطح تے جاؤ",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "پرامپٹ",
+  "command.prompt.submit": "پرامپٹ بھیجو",
+  "command.prompt.newline": "پرامپٹ وچ نئی لائن شامل کرو",
   "command.permissions.autoaccept.enable": "خودکار اجازتاں قبول کرو",
   "command.permissions.autoaccept.disable": "خودکار اجازتاں قبول کرنا بند کرو",
   "command.workspace.toggle": "ورک سپیس ٹوگل کرو",

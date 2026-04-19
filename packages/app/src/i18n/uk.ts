@@ -176,6 +176,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Перемкнути на наступний рівень зусилля",
   "command.prompt.mode.shell": "Команда",
   "command.prompt.mode.normal": "Запит",
+  "command.prompt.submit": "Надіслати запит",
+  "command.prompt.newline": "Вставити новий рядок у запит",
   "command.permissions.autoaccept.enable": "Автоматично приймати дозволи",
   "command.permissions.autoaccept.disable": "Зупинити автоматичне прийняття дозволів",
   "command.workspace.toggle": "Перемкнути робочі області",

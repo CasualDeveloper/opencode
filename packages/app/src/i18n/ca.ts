@@ -164,6 +164,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Canvia al següent nivell d'esforç",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Indicació",
+  "command.prompt.submit": "Envia la indicació",
+  "command.prompt.newline": "Insereix una línia nova a la indicació",
   "command.permissions.autoaccept.enable": "Permisos d'acceptació automàtica",
   "command.permissions.autoaccept.disable": "Atura l'acceptació automàtica de permisos",
   "command.workspace.toggle": "Commuta els espais de treball",

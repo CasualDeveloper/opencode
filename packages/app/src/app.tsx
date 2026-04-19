@@ -64,6 +64,7 @@ import { ErrorPage } from "./pages/error"
 import { useCheckServerHealth } from "./utils/server-health"
 import { legacySessionHref, legacySessionServer, requireServerKey, sessionHref } from "./utils/session-route"
 import { createSessionLineage } from "@/pages/session/session-lineage"
+import { promptKeybindOptions, PROMPT_KEYBINDS } from "@/components/prompt-input/keybinds"
 
 import { SessionPage, SessionRouteErrorBoundary, TargetSessionRouteContent } from "@/pages/session"
 import { NewHome } from "@/pages/home"
@@ -315,11 +316,26 @@ function SharedProviders(props: ParentProps) {
     <>
       <BodyDesignClass />
       <CommandProvider>
+        <PromptCommands />
         <DesktopCommands />
         <HighlightsProvider>{props.children}</HighlightsProvider>
       </CommandProvider>
     </>
   )
+}
+
+function PromptCommands() {
+  const command = useCommand()
+  const language = useLanguage()
+
+  command.register("prompt", () =>
+    promptKeybindOptions({
+      submit: language.t(PROMPT_KEYBINDS.submit.title),
+      newline: language.t(PROMPT_KEYBINDS.newline.title),
+    }),
+  )
+
+  return null
 }
 
 function DesktopCommands() {

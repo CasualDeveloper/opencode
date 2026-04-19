@@ -163,6 +163,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Ба сатҳи навбатии кӯшишҳо гузаред",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Промпт",
+  "command.prompt.submit": "Промптро фиристед",
+  "command.prompt.newline": "Дар промпт сатри нав ворид кунед",
   "command.permissions.autoaccept.enable": "Иҷозатҳоро худкор қабул кунед",
   "command.permissions.autoaccept.disable": "Қабули худкори иҷозатҳоро қатъ кунед",
   "command.workspace.toggle": "Ҷойҳои корӣ иваз кунед",

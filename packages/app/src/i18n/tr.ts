@@ -180,6 +180,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Sonraki efor seviyesine geç",
   "command.prompt.mode.shell": "Kabuk",
   "command.prompt.mode.normal": "İstem",
+  "command.prompt.submit": "İstemi gönder",
+  "command.prompt.newline": "İsteme yeni satır ekle",
   "command.permissions.autoaccept.enable": "İzinleri otomatik kabul et",
   "command.permissions.autoaccept.disable": "İzinleri otomatik kabul etmeyi durdur",
   "command.workspace.toggle": "Çalışma alanlarını aç/kapat",

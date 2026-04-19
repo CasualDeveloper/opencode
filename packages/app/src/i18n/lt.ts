@@ -166,6 +166,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Perjunkite į kitą pastangų lygį",
   "command.prompt.mode.shell": "Apvalkalas",
   "command.prompt.mode.normal": "Užklausa",
+  "command.prompt.submit": "Pateikti užklausą",
+  "command.prompt.newline": "Įterpti naują eilutę į užklausą",
   "command.permissions.autoaccept.enable": "Automatiškai priimti leidimus",
   "command.permissions.autoaccept.disable": "Sustabdykite automatinį leidimų priėmimą",
   "command.workspace.toggle": "Perjungti darbo sritis",

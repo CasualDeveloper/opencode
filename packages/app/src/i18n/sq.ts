@@ -163,6 +163,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Kalo në nivelin tjetër të përpjekjes",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Kërkesë",
+  "command.prompt.submit": "Dërgo kërkesën",
+  "command.prompt.newline": "Fut rresht të ri në kërkesë",
   "command.permissions.autoaccept.enable": "Prano automatikisht lejet",
   "command.permissions.autoaccept.disable": "Ndalo pranimin automatik të lejeve",
   "command.workspace.toggle": "Ndrysho hapësirat e punës",

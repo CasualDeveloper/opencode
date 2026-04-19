@@ -178,6 +178,8 @@ export const dict = {
   "command.model.variant.cycle.description": "切換到下一個強度等級",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "送出提示詞",
+  "command.prompt.newline": "在提示詞中插入換行",
   "command.permissions.autoaccept.enable": "自動接受權限",
   "command.permissions.autoaccept.disable": "停止自動接受權限",
   "command.workspace.toggle": "切換工作區",

@@ -170,6 +170,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Passer au niveau d'effort suivant",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Invite",
+  "command.prompt.submit": "Envoyer le prompt",
+  "command.prompt.newline": "Insérer un saut de ligne dans le prompt",
   "command.permissions.autoaccept.enable": "Accepter automatiquement les permissions",
   "command.permissions.autoaccept.disable": "Arrêter d'accepter automatiquement les permissions",
   "command.workspace.toggle": "Basculer les espaces de travail",

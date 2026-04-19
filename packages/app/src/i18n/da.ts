@@ -75,6 +75,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Skift til næste indsatsniveau",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Send prompt",
+  "command.prompt.newline": "Indsæt linjeskift i prompten",
   "command.permissions.autoaccept.enable": "Accepter tilladelser automatisk",
   "command.permissions.autoaccept.disable": "Stop med at acceptere tilladelser automatisk",
   "command.workspace.toggle": "Skift arbejdsområder",

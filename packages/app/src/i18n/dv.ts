@@ -165,6 +165,8 @@ export const dict = {
   "command.model.variant.cycle.description": "ދެން އޮންނަ މަސައްކަތުގެ ފެންވަރަށް ބަދަލުވާށެވެ",
   "command.prompt.mode.shell": "ޝެލް",
   "command.prompt.mode.normal": "ޕްރޮމްޕްޓް",
+  "command.prompt.submit": "ޕްރޮމްޕްޓް ހުށަހެޅުން",
+  "command.prompt.newline": "ޕްރޮމްޕްޓަށް އާ ލައިނެއް އިތުރުކުރުން",
   "command.permissions.autoaccept.enable": "އޮޓޯ އެކްސެޕްޓް ހުއްދަތައް",
   "command.permissions.autoaccept.disable": "ހުއްދަތައް އޮޓޯ އެކްސެޕްޓްކުރުން ހުއްޓާލާށެވެ",
   "command.workspace.toggle": "ވޯކްސްޕޭސްތައް ޓޮގްލްކުރުން",

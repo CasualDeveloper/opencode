@@ -163,6 +163,8 @@ export const dict = {
   "command.model.variant.cycle.description": "به سطح تلاش بعدی بروید",
   "command.prompt.mode.shell": "پوسته",
   "command.prompt.mode.normal": "پرامپت",
+  "command.prompt.submit": "ارسال پرامپت",
+  "command.prompt.newline": "درج خط جدید در پرامپت",
   "command.permissions.autoaccept.enable": "پذیرش خودکار مجوزها",
   "command.permissions.autoaccept.disable": "پذیرش خودکار مجوزها را متوقف کنید",
   "command.workspace.toggle": "جابجایی فضاهای کاری",

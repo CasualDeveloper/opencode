@@ -165,6 +165,8 @@ export const dict: Record<string, string> = {
   "command.model.variant.cycle.description": "འབད་བརྩོན་གནས་རིམ་ཤུལ་མམ་ལུ་སོར་བསྒྱུར་འབད།",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "འདི་འཕྲོ་ལས",
+  "command.prompt.submit": "བརྡ་སྟོན་སྤྲོད།",
+  "command.prompt.newline": "བརྡ་སྟོན་ནང་གྲལ་ཐིག་གསརཔ་བཙུགས།",
   "command.permissions.autoaccept.enable": "རང་བཞིན་ངོས་ལེན་གནང་བ་ཚུ།",
   "command.permissions.autoaccept.disable": "རང་བཞིན་དང་ལེན་གནང་བ་ཚུ་བཀག།",
   "command.workspace.toggle": "ལཱ་གི་ས་སྒོ་ཚུ་སོར་སྟོན་འབད།",

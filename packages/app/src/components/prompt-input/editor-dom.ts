@@ -53,6 +53,10 @@ export function getCursorPosition(parent: HTMLElement): number {
   return getTextLength(preCaretRange.cloneContents())
 }
 
+export function containsRange(parent: HTMLElement, range: Range) {
+  return parent.contains(range.startContainer) && parent.contains(range.endContainer)
+}
+
 export function setCursorPosition(parent: HTMLElement, position: number) {
   let remaining = position
   let node = parent.firstChild
