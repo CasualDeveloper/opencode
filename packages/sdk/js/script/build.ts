@@ -117,3 +117,4 @@ await $`bun prettier --write src/v2`
 await $`rm -rf dist`
 await $`bun tsc`
 await $`rm openapi.json`
+console.log("opencode sdk js build complete")
