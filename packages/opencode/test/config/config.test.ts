@@ -609,6 +609,20 @@ it.instance("validates config schema and throws on invalid values", () =>
   }),
 )
 
+it.instance("loads config without substituting unknown root-level fields", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      username: "testuser",
+      future_root: { nested: { child: "{file:missing.txt}" } },
+    })
+    const config = yield* Config.use.get()
+    expect(config.username).toBe("testuser")
+    expect(config).not.toHaveProperty("future_root")
+  }),
+)
+
 it.instance("throws error for invalid JSON", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

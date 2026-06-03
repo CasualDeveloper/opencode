@@ -98,15 +98,21 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
 
   const load = (text: string, configFilepath: string): Effect.Effect<Info> =>
     Effect.gen(function* () {
-      const expanded = yield* Effect.promise(() =>
-        ConfigVariable.substitute({ text, type: "path", path: configFilepath, missing: "empty" }),
-      )
-      const data = ConfigParse.jsonc(expanded, configFilepath)
+      const data = ConfigParse.jsonc(text, configFilepath)
       if (!isRecord(data)) return {} as Info
       // Flatten a nested "tui" key so users who wrote `{ "tui": { ... } }` inside tui.json
       // (mirroring the old opencode.json shape) still get their settings applied.
       const normalized = dropUnknownKeybinds(normalize(data))
-      const parsed = ConfigParse.schema(Info, normalized, configFilepath)
+      const sanitized = ConfigParse.dropTopLevelExtraKeys(Info, normalized)
+      const expanded = yield* Effect.promise(() =>
+        ConfigVariable.substitute({
+          text: JSON.stringify(sanitized) ?? "null",
+          type: "path",
+          path: configFilepath,
+          missing: "empty",
+        }),
+      )
+      const parsed = ConfigParse.schema(Info, ConfigParse.jsonc(expanded, configFilepath), configFilepath)
       const validated = parsed.attention?.sounds
         ? {
             ...parsed,

@@ -216,15 +216,18 @@ const layer = Layer.effect(
       env?: Record<string, string>,
     ) {
       const source = "path" in options ? options.path : options.source
+      const parsed = ConfigParse.jsonc(text, source)
+      const normalized = normalizeLoadedConfig(parsed)
+      const sanitized = ConfigParse.dropTopLevelExtraKeys(ConfigV1.Info, normalized)
+      const sanitizedText = JSON.stringify(sanitized) ?? "null"
       const expanded = yield* Effect.promise(() =>
         ConfigVariable.substitute(
           "path" in options
-            ? { text, type: "path", path: options.path, env }
-            : { text, type: "virtual", ...options, env },
+            ? { text: sanitizedText, type: "path", path: options.path, env }
+            : { text: sanitizedText, type: "virtual", ...options, env },
         ),
       )
-      const parsed = ConfigParse.jsonc(expanded, source)
-      const data = ConfigParse.schema(ConfigV1.Info, normalizeLoadedConfig(parsed), source)
+      const data = ConfigParse.schema(ConfigV1.Info, ConfigParse.jsonc(expanded, source), source)
       if (!("path" in options)) return data
 
       yield* Effect.promise(() => resolveLoadedPlugins(data, options.path))
