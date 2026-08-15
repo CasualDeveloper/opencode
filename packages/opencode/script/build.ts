@@ -159,6 +159,11 @@ for (const item of targets) {
   const workerPath = "./src/cli/tui/worker.ts"
   const treeSitterWorkerPath = "opentui-tree-sitter-worker.js"
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
+  const binaryPath = `dist/${name}/bin/opencode`
+
+  if (item.os === "darwin" && item.arch === "arm64" && process.platform !== "darwin") {
+    throw new Error(`Building ${name} requires macOS to repair Bun's invalid arm64 signature (oven-sh/bun#32159)`)
+  }
 
   await Bun.build({
     conditions: ["bun", "node"],
@@ -175,7 +180,7 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/opencode`,
+      outfile: binaryPath,
       execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
@@ -201,9 +206,14 @@ for (const item of targets) {
     },
   })
 
+  if (item.os === "darwin" && item.arch === "arm64") {
+    // Bun's arm64 signer hashes the final partial page incorrectly; macOS 27 rejects it (oven-sh/bun#32159).
+    await $`codesign --force --sign - ${binaryPath}`
+    await $`codesign --verify --strict ${binaryPath}`
+  }
+
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/opencode`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
