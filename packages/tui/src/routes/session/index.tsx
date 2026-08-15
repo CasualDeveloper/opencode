@@ -93,6 +93,7 @@ import {
   visibleBeforeBoundary,
   visiblePartsBeforeBoundary,
 } from "../../util/pagination"
+import { useUsageController } from "../../component/usage-controller"
 
 addDefaultParsers(parsers.parsers)
 
@@ -209,6 +210,7 @@ export function Session() {
     const current = session()
     return current ? { directory: current.directory, workspaceID: current.workspaceID } : undefined
   })
+  const usageController = useUsageController(() => route.sessionID, location)
 
   createEffect(() => {
     const title = Locale.truncate(session()?.title ?? "", 50)
@@ -1629,6 +1631,7 @@ export function Session() {
                       disabled={disabled()}
                       onSubmit={afterSubmit}
                       sessionID={route.sessionID}
+                      showUsage={usageController.show}
                       right={<pluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
                     />
                   </pluginRuntime.Slot>
