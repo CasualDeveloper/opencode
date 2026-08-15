@@ -10759,6 +10759,9 @@
                     "type": "string",
                     "enum": ["steer", "queue"]
                   },
+                  "selection": {
+                    "$ref": "#/components/schemas/SessionInputSelection"
+                  },
                   "resume": {
                     "type": "boolean"
                   }
@@ -18011,6 +18014,9 @@
                       "delivery": {
                         "type": "string",
                         "enum": ["steer", "queue"]
+                      },
+                      "selection": {
+                        "$ref": "#/components/schemas/SessionInputSelection"
                       }
                     },
                     "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],
@@ -18051,6 +18057,9 @@
                       "delivery": {
                         "type": "string",
                         "enum": ["steer", "queue"]
+                      },
+                      "selection": {
+                        "$ref": "#/components/schemas/SessionInputSelection"
                       }
                     },
                     "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],
@@ -24787,6 +24796,19 @@
         "required": ["name"],
         "additionalProperties": false
       },
+      "SessionInputSelection": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          }
+        },
+        "required": ["agent", "model"],
+        "additionalProperties": false
+      },
       "SessionErrorUnknown": {
         "type": "object",
         "properties": {
@@ -25668,6 +25690,9 @@
                   "delivery": {
                     "type": "string",
                     "enum": ["steer", "queue"]
+                  },
+                  "selection": {
+                    "$ref": "#/components/schemas/SessionInputSelection"
                   }
                 },
                 "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],
@@ -25729,6 +25754,9 @@
                   "delivery": {
                     "type": "string",
                     "enum": ["steer", "queue"]
+                  },
+                  "selection": {
+                    "$ref": "#/components/schemas/SessionInputSelection"
                   }
                 },
                 "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],
@@ -27541,6 +27569,9 @@
             "type": "string",
             "enum": ["steer", "queue"]
           },
+          "selection": {
+            "$ref": "#/components/schemas/SessionInputSelection"
+          },
           "timeCreated": {
             "type": "number"
           },
@@ -28382,6 +28413,9 @@
               "delivery": {
                 "type": "string",
                 "enum": ["steer", "queue"]
+              },
+              "selection": {
+                "$ref": "#/components/schemas/SessionInputSelection"
               }
             },
             "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],
@@ -28444,6 +28478,9 @@
               "delivery": {
                 "type": "string",
                 "enum": ["steer", "queue"]
+              },
+              "selection": {
+                "$ref": "#/components/schemas/SessionInputSelection"
               }
             },
             "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],
@@ -34490,6 +34527,9 @@
               "delivery": {
                 "type": "string",
                 "enum": ["steer", "queue"]
+              },
+              "selection": {
+                "$ref": "#/components/schemas/SessionInputSelection"
               }
             },
             "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],
@@ -34530,6 +34570,9 @@
               "delivery": {
                 "type": "string",
                 "enum": ["steer", "queue"]
+              },
+              "selection": {
+                "$ref": "#/components/schemas/SessionInputSelection"
               }
             },
             "required": ["timestamp", "sessionID", "messageID", "prompt", "delivery"],

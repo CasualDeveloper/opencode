@@ -858,6 +858,7 @@ export type GlobalEvent = {
           messageID: string
           prompt: Prompt
           delivery: "steer" | "queue"
+          selection?: SessionInputSelection
         }
       }
     | {
@@ -869,6 +870,7 @@ export type GlobalEvent = {
           messageID: string
           prompt: Prompt
           delivery: "steer" | "queue"
+          selection?: SessionInputSelection
         }
       }
     | {
@@ -3069,6 +3071,11 @@ export type PromptAgentAttachment = {
   source?: PromptSource
 }
 
+export type SessionInputSelection = {
+  agent: string
+  model: ModelRef
+}
+
 export type SessionErrorUnknown = {
   type: "unknown"
   message: string
@@ -3368,6 +3375,7 @@ export type SyncEventSessionNextPrompted = {
       messageID: string
       prompt: Prompt
       delivery: "steer" | "queue"
+      selection?: SessionInputSelection
     }
   }
 }
@@ -3386,6 +3394,7 @@ export type SyncEventSessionNextPromptAdmitted = {
       messageID: string
       prompt: Prompt
       delivery: "steer" | "queue"
+      selection?: SessionInputSelection
     }
   }
 }
@@ -3947,6 +3956,7 @@ export type SessionInputAdmitted = {
   sessionID: string
   prompt: Prompt
   delivery: "steer" | "queue"
+  selection?: SessionInputSelection
   timeCreated: number
   promotedSeq?: number
 }
@@ -4245,6 +4255,7 @@ export type SessionNextPrompted = {
     messageID: string
     prompt: Prompt
     delivery: "steer" | "queue"
+    selection?: SessionInputSelection
   }
 }
 
@@ -4266,6 +4277,7 @@ export type SessionNextPromptAdmitted = {
     messageID: string
     prompt: Prompt
     delivery: "steer" | "queue"
+    selection?: SessionInputSelection
   }
 }
 
@@ -6311,6 +6323,7 @@ export type EventSessionNextPrompted = {
     messageID: string
     prompt: Prompt
     delivery: "steer" | "queue"
+    selection?: SessionInputSelection
   }
 }
 
@@ -6323,6 +6336,7 @@ export type EventSessionNextPromptAdmitted = {
     messageID: string
     prompt: Prompt
     delivery: "steer" | "queue"
+    selection?: SessionInputSelection
   }
 }
 
@@ -11625,6 +11639,7 @@ export type V2SessionPromptData = {
     id?: string
     prompt: PromptInput
     delivery?: "steer" | "queue"
+    selection?: SessionInputSelection
     resume?: boolean
   }
   path: {
