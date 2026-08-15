@@ -30,10 +30,19 @@ const CHANNEL = await (async () => {
   return await $`git branch --show-current`.text().then((x) => x.trim())
 })()
 const IS_PREVIEW = CHANNEL !== "latest"
+const previewTimestamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")
+const versionPart = (input: string) => input.replace(/[^0-9A-Za-z-]+/g, "-").replace(/^-+|-+$/g, "") || "unknown"
+const casualVersion = async () => {
+  const branch = await $`git branch --show-current`.text().then((x) => x.trim())
+  return `0.0.0-${versionPart(await $`git merge-base dev HEAD`.text().then((x) => x.trim().slice(0, 10)))}-${versionPart(
+    branch || (await $`git rev-parse --short=10 HEAD`.text().then((x) => `detached-${x.trim()}`)),
+  )}-${previewTimestamp()}`
+}
 
 const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
-  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+  if (CHANNEL === "casual") return await casualVersion()
+  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${previewTimestamp()}`
   const version = await fetch("https://registry.npmjs.org/opencode-ai/latest")
     .then((res) => {
       if (!res.ok) throw new Error(res.statusText)
