@@ -162,6 +162,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Lülituge järgmisele pingutustasemele",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Viip",
+  "command.prompt.submit": "Esita viip",
+  "command.prompt.newline": "Lisa viibale reavahetus",
   "command.permissions.autoaccept.enable": "Lubade automaatne aktsepteerimine",
   "command.permissions.autoaccept.disable": "Peatage lubade automaatne vastuvõtmine",
   "command.workspace.toggle": "Tööruumide sisse- ja väljalülitamine",

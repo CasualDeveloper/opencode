@@ -166,6 +166,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Skiptu yfir á næsta átaksstig",
   "command.prompt.mode.shell": "Skel",
   "command.prompt.mode.normal": "Kvaðning",
+  "command.prompt.submit": "Senda kvaðningu",
+  "command.prompt.newline": "Setja inn línuskil í kvaðningu",
   "command.permissions.autoaccept.enable": "Samþykkja sjálfkrafa heimildir",
   "command.permissions.autoaccept.disable": "Hætta að samþykkja heimildir sjálfkrafa",
   "command.workspace.toggle": "Skiptu um vinnusvæði",

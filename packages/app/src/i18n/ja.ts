@@ -168,6 +168,8 @@ export const dict = {
   "command.model.variant.cycle.description": "次の思考レベルに切り替え",
   "command.prompt.mode.shell": "シェル",
   "command.prompt.mode.normal": "プロンプト",
+  "command.prompt.submit": "プロンプトを送信",
+  "command.prompt.newline": "プロンプトに改行を挿入",
   "command.permissions.autoaccept.enable": "権限を自動承認する",
   "command.permissions.autoaccept.disable": "権限の自動承認を停止する",
   "command.workspace.toggle": "ワークスペースを切り替え",

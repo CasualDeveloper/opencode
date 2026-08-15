@@ -168,6 +168,8 @@ export const dict = {
   "command.model.variant.cycle.description": "التبديل إلى مستوى الجهد التالي",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "موجّه",
+  "command.prompt.submit": "إرسال الموجه",
+  "command.prompt.newline": "إدراج سطر جديد في الموجه",
   "command.permissions.autoaccept.enable": "قبول الأذونات تلقائيًا",
   "command.permissions.autoaccept.disable": "إيقاف قبول الأذونات تلقائيًا",
   "command.workspace.toggle": "تبديل مساحات العمل",

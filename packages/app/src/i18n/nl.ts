@@ -162,6 +162,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Ga naar het volgende inspanningsniveau",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Prompt verzenden",
+  "command.prompt.newline": "Nieuwe regel invoegen in prompt",
   "command.permissions.autoaccept.enable": "Machtigingen automatisch accepteren",
   "command.permissions.autoaccept.disable": "Stop met het automatisch accepteren van machtigingen",
   "command.workspace.toggle": "Werkruimten in- of uitschakelen",

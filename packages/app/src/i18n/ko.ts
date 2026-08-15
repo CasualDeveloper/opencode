@@ -65,6 +65,8 @@ export const dict = {
   "command.model.variant.cycle.description": "다음 생각 수준으로 전환",
   "command.prompt.mode.shell": "셸",
   "command.prompt.mode.normal": "프롬프트",
+  "command.prompt.submit": "프롬프트 제출",
+  "command.prompt.newline": "프롬프트에 줄바꿈 삽입",
   "command.permissions.autoaccept.enable": "권한 자동 수락",
   "command.permissions.autoaccept.disable": "권한 자동 수락 중지",
   "command.workspace.toggle": "작업 공간 전환",

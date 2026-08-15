@@ -162,6 +162,8 @@ export const dict: Record<string, string> = {
   "command.model.variant.cycle.description": "ඊළඟ උත්සාහ මට්ටමට මාරු වන්න",
   "command.prompt.mode.shell": "ෂෙල්",
   "command.prompt.mode.normal": "ප්‍රොම්ප්ට්",
+  "command.prompt.submit": "ප්‍රොම්ප්ට් එක ඉදිරිපත් කරන්න",
+  "command.prompt.newline": "ප්‍රොම්ප්ට් එකට නව පේළියක් ඇතුළත් කරන්න",
   "command.permissions.autoaccept.enable": "අවසර ස්වයංක්‍රීයව පිළිගන්න",
   "command.permissions.autoaccept.disable": "අවසර ස්වයංක්‍රීයව පිළිගැනීම නවත්වන්න",
   "command.workspace.toggle": "වැඩබිම් ටොගල් කරන්න",

@@ -164,6 +164,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Անցնել հաջորդ ջանքերի մակարդակին",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Հուշում",
+  "command.prompt.submit": "Ուղարկել հուշումը",
+  "command.prompt.newline": "Հուշման մեջ տողի անցում տեղադրել",
   "command.permissions.autoaccept.enable": "Ավտոմատ ընդունել թույլտվությունները",
   "command.permissions.autoaccept.disable": "Դադարեցնել թույլտվությունների ավտոմատ ընդունումը",
   "command.workspace.toggle": "Փոխարկել աշխատանքային տարածքները",

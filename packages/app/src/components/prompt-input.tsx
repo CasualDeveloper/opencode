@@ -51,7 +51,13 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { createSessionTabs } from "@/pages/session/helpers"
-import { createTextFragment, getCursorPosition, setCursorPosition, setRangeEdge } from "./prompt-input/editor-dom"
+import {
+  containsRange,
+  createTextFragment,
+  getCursorPosition,
+  setCursorPosition,
+  setRangeEdge,
+} from "./prompt-input/editor-dom"
 import { createPromptAttachments } from "./prompt-input/attachments"
 import { ACCEPTED_FILE_TYPES, pickAttachmentFiles } from "./prompt-input/files"
 import {
@@ -79,6 +85,7 @@ import { PromptImageAttachments } from "./prompt-input/image-attachments"
 import { PromptDragOverlay } from "./prompt-input/drag-overlay"
 import { promptPlaceholder } from "./prompt-input/placeholder"
 import { createPromptInputTransientState } from "./prompt-input/transient-state"
+import { createPromptKeybinds, PROMPT_KEYBINDS } from "./prompt-input/keybinds"
 import { showToast } from "@/utils/toast"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
@@ -128,6 +135,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const language = useLanguage()
   const platform = usePlatform()
   const tabs = () => props.controls.session.tabs
+  const keybinds = createPromptKeybinds()
   let editorRef!: HTMLDivElement
   let fileInputRef: HTMLInputElement | undefined
   let scrollRef!: HTMLDivElement
@@ -271,6 +279,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const buttons = createMemo(() => motion(buttonsSpring()))
   const shell = createMemo(() => motion(1 - buttonsSpring()))
   const control = createMemo(() => ({ height: "28px", ...buttons() }))
+  const submitKeybindLabel = createMemo(() => command.keybind(PROMPT_KEYBINDS.submit.id))
 
   const commentCount = createMemo(() => {
     if (store.mode === "shell") return 0
@@ -295,10 +304,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       )
     }
 
+    const keybind = submitKeybindLabel()
     return (
       <div class="flex items-center gap-2">
         <span>{language.t("prompt.action.send")}</span>
-        <Icon name="enter" size="small" class="text-icon-base" />
+        <Show when={keybind}>
+          <span class="text-icon-base text-12-medium text-[10px]!">{keybind}</span>
+        </Show>
       </div>
     )
   }
@@ -1035,7 +1047,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
     if (selection.rangeCount === 0) return false
     const range = selection.getRangeAt(0)
-    if (!editorRef.contains(range.startContainer)) return false
+    if (!containsRange(editorRef, range)) return false
 
     if (part.type === "file" || part.type === "agent") {
       const cursorPosition = getCursorPosition(editorRef)
@@ -1231,6 +1243,45 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     })
 
   const handleKeyDown = (event: KeyboardEvent) => {
+    const composing = isImeComposing(event)
+    const bareEnter = event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+    const newline = keybinds.newline(event)
+    if (composing && (!newline || event.key !== "Enter" || bareEnter)) return
+
+    if (newline) {
+      addPart({ type: "text", content: "\n", start: 0, end: 0 })
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+
+    if (composing) return
+
+    if (keybinds.submit(event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (store.popover) {
+        selectPopoverActive()
+        return
+      }
+      if (event.repeat) return
+      if (!props.controls.model.ready) return
+      if (
+        working() &&
+        prompt
+          .current()
+          .map((part) => ("content" in part ? part.content : ""))
+          .join("")
+          .trim().length === 0 &&
+        imageAttachments().length === 0 &&
+        commentCount() === 0
+      ) {
+        return
+      }
+      void handleSubmit(event)
+      return
+    }
+
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "u") {
       event.preventDefault()
       if (store.mode !== "normal") return
@@ -1305,18 +1356,6 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       }
     }
 
-    // Handle Shift+Enter BEFORE IME check - Shift+Enter is never used for IME input
-    // and should always insert a newline regardless of composition state
-    if (event.key === "Enter" && event.shiftKey) {
-      addPart({ type: "text", content: "\n", start: 0, end: 0 })
-      event.preventDefault()
-      return
-    }
-
-    if (event.key === "Enter" && isImeComposing(event)) {
-      return
-    }
-
     const ctrl = event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
 
     if (store.popover) {
@@ -1325,7 +1364,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         event.preventDefault()
         return
       }
-      const nav = event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "Enter"
+      const nav = event.key === "ArrowUp" || event.key === "ArrowDown"
       const ctrlNav = ctrl && (event.key === "n" || event.key === "p")
       if (nav || ctrlNav) {
         if (store.popover === "at") {
@@ -1375,25 +1414,15 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       return
     }
 
-    // Note: Shift+Enter is handled earlier, before IME check
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key !== "Enter") return
+    if (store.popover) {
+      selectPopoverActive()
       event.preventDefault()
-      if (event.repeat) return
-      if (!props.controls.model.ready) return
-      if (
-        working() &&
-        prompt
-          .current()
-          .map((part) => ("content" in part ? part.content : ""))
-          .join("")
-          .trim().length === 0 &&
-        imageAttachments().length === 0 &&
-        commentCount() === 0
-      ) {
-        return
-      }
-      void handleSubmit(event)
+      event.stopPropagation()
+      return
     }
+    event.preventDefault()
+    event.stopPropagation()
   }
 
   const handleSlashMenuKeyDown = (event: KeyboardEvent) => {

@@ -162,6 +162,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Preklopite na naslednjo stopnjo napora",
   "command.prompt.mode.shell": "školjka",
   "command.prompt.mode.normal": "Poziv",
+  "command.prompt.submit": "Pošlji poziv",
+  "command.prompt.newline": "Vstavi novo vrstico v poziv",
   "command.permissions.autoaccept.enable": "Samodejno sprejemanje dovoljenj",
   "command.permissions.autoaccept.disable": "Ustavi samodejno sprejemanje dovoljenj",
   "command.workspace.toggle": "Preklopi delovne prostore",

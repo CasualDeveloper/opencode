@@ -69,6 +69,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Vaihda seuraavalle päättelyn tasolle",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Kehote",
+  "command.prompt.submit": "Lähetä kehote",
+  "command.prompt.newline": "Lisää kehotteeseen rivinvaihto",
   "command.permissions.autoaccept.enable": "Hyväksy käyttöoikeudet automaattisesti",
   "command.permissions.autoaccept.disable": "Lopeta käyttöoikeuksien automaattinen hyväksyminen",
   "command.workspace.toggle": "Vaihda työtiloja",

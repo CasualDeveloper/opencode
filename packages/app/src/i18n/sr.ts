@@ -163,6 +163,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Пребаците се на следећи ниво напора",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Промпт",
+  "command.prompt.submit": "Пошаљи промпт",
+  "command.prompt.newline": "Уметни нови ред у промпт",
   "command.permissions.autoaccept.enable": "Аутоматско прихватање дозвола",
   "command.permissions.autoaccept.disable": "Зауставите аутоматско прихватање дозвола",
   "command.workspace.toggle": "Укључите радне просторе",

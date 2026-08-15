@@ -169,6 +169,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Przełącz na następny poziom wysiłku",
   "command.prompt.mode.shell": "Terminal",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Wyślij prompt",
+  "command.prompt.newline": "Wstaw nowy wiersz w prompcie",
   "command.permissions.autoaccept.enable": "Automatycznie akceptuj uprawnienia",
   "command.permissions.autoaccept.disable": "Zatrzymaj automatyczne akceptowanie uprawnień",
   "command.workspace.toggle": "Przełącz przestrzenie robocze",

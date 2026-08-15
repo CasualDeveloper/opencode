@@ -176,6 +176,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Beralih ke tingkat usaha berikutnya",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Kirim prompt",
+  "command.prompt.newline": "Sisipkan baris baru dalam prompt",
   "command.permissions.autoaccept.enable": "Terima izin otomatis",
   "command.permissions.autoaccept.disable": "Hentikan penerimaan izin otomatis",
   "command.workspace.toggle": "Alihkan ruang kerja",

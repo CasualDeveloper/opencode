@@ -70,6 +70,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Passa al livello di ragionamento successivo",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Invia il prompt",
+  "command.prompt.newline": "Inserisci una nuova riga nel prompt",
   "command.permissions.autoaccept.enable": "Accetta automaticamente le autorizzazioni",
   "command.permissions.autoaccept.disable": "Interrompi l'accettazione automatica delle autorizzazioni",
   "command.workspace.toggle": "Attiva o disattiva le aree di lavoro",

@@ -161,4 +161,19 @@ describe("prompt input v2 interaction machine", () => {
     expect(result.state.popover).toEqual({ type: "context", query: "", activeID: "first" })
     expect(result.handled).toBeTrue()
   })
+
+  test("accepts the active popover item with Enter", () => {
+    const state = {
+      ...createPromptInputV2InteractionState(),
+      popover: { type: "command-inline" as const, query: "", activeID: command.id },
+    }
+
+    const result = transitionPromptInputV2(
+      state,
+      { type: "key.down", key: "Enter", ctrl: false, composing: false, ids: [command.id] },
+      persisted(),
+    )
+
+    expect(result.commands).toContainEqual({ type: "suggestion.select", id: command.id })
+  })
 })

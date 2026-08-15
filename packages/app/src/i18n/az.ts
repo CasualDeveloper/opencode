@@ -164,6 +164,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Növbəti səviyyəyə keç",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Prompt",
+  "command.prompt.submit": "Promptu göndər",
+  "command.prompt.newline": "Prompta yeni sətir əlavə et",
   "command.permissions.autoaccept.enable": "İcazələri avtomatik qəbul et",
   "command.permissions.autoaccept.disable": "İcazələrin avtomatik qəbulunu dayandır",
   "command.workspace.toggle": "İş sahələrini aç/bağla",

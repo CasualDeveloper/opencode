@@ -164,6 +164,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Keyingi harakat darajasiga o'ting",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Tezkor",
+  "command.prompt.submit": "So'rovni yuborish",
+  "command.prompt.newline": "So'rovga yangi qator kiritish",
   "command.permissions.autoaccept.enable": "Ruxsatlarni avtomatik qabul qilish",
   "command.permissions.autoaccept.disable": "Ruxsatlarni avtomatik qabul qilishni to'xtating",
   "command.workspace.toggle": "Ish joylarini almashtirish",

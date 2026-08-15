@@ -163,6 +163,8 @@ export const dict = {
   "command.model.variant.cycle.description": "Μετάβαση στο επόμενο επίπεδο προσπάθειας",
   "command.prompt.mode.shell": "Shell",
   "command.prompt.mode.normal": "Προτροπή",
+  "command.prompt.submit": "Υποβολή προτροπής",
+  "command.prompt.newline": "Εισαγωγή νέας γραμμής στην προτροπή",
   "command.permissions.autoaccept.enable": "Αυτόματη αποδοχή δικαιωμάτων",
   "command.permissions.autoaccept.disable": "Διακοπή αυτόματης αποδοχής δικαιωμάτων",
   "command.workspace.toggle": "Εναλλαγή χώρων εργασίας",

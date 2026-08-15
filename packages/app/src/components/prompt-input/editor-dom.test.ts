@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { createTextFragment, getCursorPosition, getNodeLength, getTextLength, setCursorPosition } from "./editor-dom"
+import {
+  containsRange,
+  createTextFragment,
+  getCursorPosition,
+  getNodeLength,
+  getTextLength,
+  setCursorPosition,
+} from "./editor-dom"
 
 describe("prompt-input editor dom", () => {
   test("createTextFragment preserves newlines with consecutive br nodes", () => {
@@ -95,5 +102,26 @@ describe("prompt-input editor dom", () => {
     expect(getCursorPosition(container)).toBe(3)
 
     container.remove()
+  })
+
+  test("containsRange rejects selections that leave the editor", () => {
+    const editor = document.createElement("div")
+    const outside = document.createElement("div")
+    editor.textContent = "inside"
+    outside.textContent = "outside"
+    document.body.append(editor, outside)
+    const inside = document.createRange()
+    inside.setStart(editor.firstChild!, 1)
+    inside.setEnd(editor.firstChild!, 3)
+    const crossing = document.createRange()
+    crossing.setStart(editor.firstChild!, 1)
+    crossing.setEnd(outside.firstChild!, 3)
+
+    expect({ inside: containsRange(editor, inside), crossing: containsRange(editor, crossing) }).toEqual({
+      inside: true,
+      crossing: false,
+    })
+    editor.remove()
+    outside.remove()
   })
 })
