@@ -469,6 +469,29 @@ it.instance("ignores unknown keybind names without dropping valid overrides from
   ),
 )
 
+it.instance("loads tui config without substituting unknown root-level fields", () =>
+  withEnv(
+    "OPENCODE_TEST_FUTURE_ROOT",
+    '"',
+    withCleanState(
+      Effect.gen(function* () {
+        const fs = yield* FSUtil.Service
+        const test = yield* TestInstance
+        yield* fs.writeJson(path.join(test.directory, "tui.json"), {
+          theme: "future-theme",
+          scroll_speed: 2,
+          future_root: { nested: { child: "{env:OPENCODE_TEST_FUTURE_ROOT}" } },
+        })
+
+        const config = yield* getTuiConfig(test.directory)
+        expect(config.theme).toBe("future-theme")
+        expect(config.scroll_speed).toBe(2)
+        expect(config).not.toHaveProperty("future_root")
+      }),
+    ),
+  ),
+)
+
 it.instance("resolves keybind lookup from canonical keybinds", () =>
   withCleanState(
     Effect.gen(function* () {
