@@ -2,7 +2,8 @@ import { expect, test } from "bun:test"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
-import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode } from "../src/theme"
+import { RGBA } from "@opentui/core"
+import { DEFAULT_THEMES, addTheme, allThemes, generateSyntax, hasTheme, resolveTheme, terminalMode } from "../src/theme"
 import { discoverThemes } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
 
@@ -42,6 +43,56 @@ test("resolveTheme rejects circular color refs", () => {
   item.defs = { ...item.defs, one: "two", two: "one" }
   item.theme.primary = "one"
   expect(() => resolveTheme(item, "dark")).toThrow("Circular color reference")
+})
+
+test("resolveTheme falls back to legacy XML/HTML syntax colors", () => {
+  const theme = structuredClone(DEFAULT_THEMES.opencode)
+
+  delete theme.theme.syntaxTag
+  delete theme.theme.syntaxAttribute
+  delete theme.theme.syntaxTagDelimiter
+
+  const resolved = resolveTheme(theme, "dark")
+
+  expect(resolved.syntaxTag).toBe(resolved.error)
+  expect(resolved.syntaxAttribute).toBe(resolved.syntaxKeyword)
+  expect(resolved.syntaxTagDelimiter).toBe(resolved.syntaxOperator)
+})
+
+test("resolveTheme honors explicit XML/HTML syntax tokens", () => {
+  const syntaxTag = RGBA.fromInts(10, 20, 30)
+  const syntaxAttribute = RGBA.fromInts(40, 50, 60)
+  const syntaxTagDelimiter = RGBA.fromInts(70, 80, 90)
+
+  const theme = structuredClone(DEFAULT_THEMES.opencode)
+  theme.theme.syntaxTag = syntaxTag
+  theme.theme.syntaxAttribute = syntaxAttribute
+  theme.theme.syntaxTagDelimiter = syntaxTagDelimiter
+
+  const resolved = resolveTheme(theme, "dark")
+
+  expect(resolved.syntaxTag).toBe(syntaxTag)
+  expect(resolved.syntaxAttribute).toBe(syntaxAttribute)
+  expect(resolved.syntaxTagDelimiter).toBe(syntaxTagDelimiter)
+})
+
+test("generateSyntax maps XML/HTML scopes to syntax tokens", () => {
+  const theme = structuredClone(DEFAULT_THEMES.opencode)
+  theme.theme.syntaxTag = RGBA.fromInts(10, 20, 30)
+  theme.theme.syntaxAttribute = RGBA.fromInts(40, 50, 60)
+  theme.theme.syntaxTagDelimiter = RGBA.fromInts(70, 80, 90)
+
+  const resolved = resolveTheme(theme, "dark")
+  const syntax = generateSyntax(resolved)
+
+  try {
+    const styles = new Map(syntax.getAllStyles())
+    expect(styles.get("tag")?.fg?.toInts()).toEqual(resolved.syntaxTag.toInts())
+    expect(styles.get("tag.attribute")?.fg?.toInts()).toEqual(resolved.syntaxAttribute.toInts())
+    expect(styles.get("tag.delimiter")?.fg?.toInts()).toEqual(resolved.syntaxTagDelimiter.toInts())
+  } finally {
+    syntax.destroy()
+  }
 })
 
 function terminalColors(defaultBackground: string | null, palette: Array<string | null> = []): TerminalColors {
