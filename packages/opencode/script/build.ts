@@ -207,7 +207,8 @@ for (const item of targets) {
   })
 
   if (item.os === "darwin" && item.arch === "arm64") {
-    // Bun's arm64 signer hashes the final partial page incorrectly; macOS 27 rejects it (oven-sh/bun#32159).
+    // Replace Bun's malformed arm64 signature; macOS 27 rejects its final partial-page hash (oven-sh/bun#32159).
+    await $`codesign --remove-signature ${binaryPath}`
     await $`codesign --force --sign - ${binaryPath}`
     await $`codesign --verify --strict ${binaryPath}`
   }
