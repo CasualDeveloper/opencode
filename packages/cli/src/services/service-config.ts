@@ -51,7 +51,7 @@ export function versionBelongsToChannel(
   if (version === installedVersion) return true
   const prefix = `0.0.0-${channel}-`
   if (!version.startsWith(prefix)) return false
-  return /^\d+(?:\.\d+)?$/.test(version.slice(prefix.length))
+  return /^(?:[0-9a-f]{10}-)?\d+(?:\.\d+)?$/.test(version.slice(prefix.length))
 }
 
 export const migrateRegistration = Effect.fnUntraced(function* (
@@ -107,11 +107,7 @@ export const options = Effect.fnUntraced(function* (input: { readonly checkVersi
     file,
     version: input.checkVersion ? OPENCODE_VERSION : undefined,
     env: (yield* read()).env,
-    command: [
-      ...selfCommand(),
-      "serve",
-      "--service",
-    ],
+    command: [...selfCommand(), "serve", "--service"],
   }
 })
 
