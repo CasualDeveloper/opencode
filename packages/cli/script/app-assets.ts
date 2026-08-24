@@ -3,8 +3,8 @@ import path from "node:path"
 import { brotliCompressSync, constants } from "node:zlib"
 import { collectFiles } from "./files"
 
-export async function buildAppArchive(channel: string, options?: { skipBuild?: boolean }) {
-  if (options?.skipBuild) return compress({})
+export async function buildAppArchive(channel: string, options?: { skipBuild?: boolean; compressionQuality?: number }) {
+  if (options?.skipBuild) return compress({}, options.compressionQuality)
   const root = path.resolve(import.meta.dirname, "../../app")
   await $`bun run build`
     .cwd(root)
@@ -23,12 +23,12 @@ export async function buildAppArchive(channel: string, options?: { skipBuild?: b
         }),
     ),
   )
-  return compress(assets)
+  return compress(assets, options?.compressionQuality)
 }
 
-function compress(assets: object) {
+function compress(assets: object, quality = 11) {
   return brotliCompressSync(JSON.stringify(assets), {
-    params: { [constants.BROTLI_PARAM_QUALITY]: 11 },
+    params: { [constants.BROTLI_PARAM_QUALITY]: quality },
   }).toString("base64")
 }
 
