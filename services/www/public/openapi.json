@@ -2144,7 +2144,7 @@
             }
           }
         },
-        "description": "Durably admit one session input and schedule agent-loop execution unless resume is false.",
+        "description": "Durably admit optional synthetic context followed by one user input and schedule agent-loop execution unless resume is false. Context requires steer delivery. Selection intent applies atomically to a winning new admission only when both requested and prepared delivery are steer; queues and same-ID retries do not reapply selection.",
         "summary": "Send message",
         "requestBody": {
           "content": {
@@ -2182,6 +2182,26 @@
                     "items": {
                       "$ref": "#/components/schemas/PromptInput.SkillAttachment"
                     }
+                  },
+                  "context": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/PromptInput.Context"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "selection": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/PromptInput.Selection"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "metadata": {
                     "type": "object"
@@ -14190,6 +14210,9 @@
         "properties": {
           "compaction": {
             "$ref": "#/components/schemas/Provider.Compaction"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/Provider.Encoding"
           }
         },
         "allOf": [
@@ -14369,6 +14392,9 @@
           },
           "transport": {
             "$ref": "#/components/schemas/Provider.Transport"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/Provider.Encoding"
           }
         },
         "allOf": [
@@ -16838,6 +16864,9 @@
         "properties": {
           "compaction": {
             "$ref": "#/components/schemas/Provider.Compaction"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/Provider.Encoding"
           }
         },
         "allOf": [
@@ -17670,6 +17699,25 @@
         "required": ["id", "name"],
         "additionalProperties": false
       },
+      "PromptInput.Context": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Session.Message.ID"
+          },
+          "text": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        },
+        "required": ["id", "text"],
+        "additionalProperties": false
+      },
       "PromptInput.FileAttachment": {
         "type": "object",
         "properties": {
@@ -17687,6 +17735,19 @@
           }
         },
         "required": ["uri"],
+        "additionalProperties": false
+      },
+      "PromptInput.Selection": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/Agent.ID"
+          },
+          "model": {
+            "$ref": "#/components/schemas/Model.Ref"
+          }
+        },
+        "required": ["agent", "model"],
         "additionalProperties": false
       },
       "PromptInput.SkillAttachment": {
@@ -17754,6 +17815,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "Provider.Encoding": {
+        "type": "string",
+        "enum": ["zstd", "gzip", "none"]
       },
       "Provider.ID": {
         "type": "string"
@@ -17859,6 +17924,9 @@
           },
           "transport": {
             "$ref": "#/components/schemas/Provider.Transport"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/Provider.Encoding"
           }
         },
         "allOf": [
