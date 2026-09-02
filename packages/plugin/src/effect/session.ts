@@ -14,6 +14,8 @@ import type { ModelHooks } from "./registration.js"
 export interface SessionPrompt {
   readonly sessionID: Session.ID
   readonly messageID: SessionMessage.ID
+  /** Requested selection intent. Session reads still reflect committed state during preparation. */
+  readonly selection?: PromptInput.Selection
   prompt: Types.DeepMutable<PromptInput.Prompt>
   metadata?: Record<string, unknown>
   delivery: SessionInbox.Delivery

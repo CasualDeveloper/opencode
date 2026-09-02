@@ -7,6 +7,66 @@ import { ServerFetch } from "../src/fetch"
 const SessionResponse = Schema.Struct({ data: Schema.toEncoded(Session.Info) })
 const SessionsResponse = Schema.Struct({ data: Schema.Array(Schema.toEncoded(Session.Info)) })
 
+it.live("forwards atomic prompt selection and leaves selection untouched on preparation failure", () =>
+  Effect.gen(function* () {
+    const handler = yield* ServerFetch.make({
+      app: { version: "test" },
+      database: { path: ":memory:" },
+      config: { project: false },
+      models: { fetch: false },
+      fs: { filewatcher: false },
+    })
+    const created = yield* Effect.promise(() =>
+      handler(
+        new Request("http://opencode.local/api/session", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ agent: "build", model: { providerID: "test", id: "initial" } }),
+        }),
+      ),
+    )
+    expect(created.status).toBe(200)
+    const session = Schema.decodeUnknownSync(SessionResponse)(yield* Effect.promise(() => created.json())).data
+    const selection = { agent: "plan", model: { providerID: "test", id: "selected", variant: "high" } }
+    const rejected = yield* Effect.promise(() =>
+      handler(
+        new Request(`http://opencode.local/api/session/${session.id}/prompt`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            text: "rejected",
+            selection,
+            files: [{ uri: "data:image/png;base64,invalid" }],
+            resume: false,
+          }),
+        }),
+      ),
+    )
+    expect(rejected.status).toBe(400)
+    const unchanged = yield* Effect.promise(() =>
+      handler(new Request(`http://opencode.local/api/session/${session.id}`)).then((response) => response.json()),
+    )
+    expect(Schema.decodeUnknownSync(SessionResponse)(unchanged).data).toMatchObject({
+      agent: "build",
+      model: { id: "initial" },
+    })
+    const admitted = yield* Effect.promise(() =>
+      handler(
+        new Request(`http://opencode.local/api/session/${session.id}/prompt`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "admitted", selection, resume: false }),
+        }),
+      ),
+    )
+    expect(admitted.status).toBe(200)
+    const updated = yield* Effect.promise(() =>
+      handler(new Request(`http://opencode.local/api/session/${session.id}`)).then((response) => response.json()),
+    )
+    expect(Schema.decodeUnknownSync(SessionResponse)(updated).data).toMatchObject(selection)
+  }).pipe(Effect.scoped),
+)
+
 it.live("creates a child at its parent's location and lists it under the parent", () =>
   Effect.gen(function* () {
     const handler = yield* ServerFetch.make({

@@ -10,6 +10,7 @@ import { Model } from "../src/model.js"
 import { Project } from "../src/project.js"
 import { SkillAttachment } from "../src/prompt.js"
 import { Provider } from "../src/provider.js"
+import { PromptInput } from "../src/prompt-input.js"
 import { Pty } from "../src/pty.js"
 import { Session } from "../src/session.js"
 import { SessionMessage } from "../src/session-message.js"
@@ -90,6 +91,30 @@ describe("contract hygiene", () => {
       ...reference,
       text: "Use Effect",
     })
+  })
+
+  test("prompt selection is a canonical serializable intent with optional model variant omitted", () => {
+    const input = PromptInput.Selection.make({
+      agent: Agent.ID.make("build"),
+      model: Model.Ref.make({
+        providerID: Provider.ID.make("provider"),
+        id: Model.ID.make("model"),
+        variant: undefined,
+      }),
+    })
+    expect(Schema.encodeSync(PromptInput.Selection)(input)).toEqual({
+      agent: "build",
+      model: { providerID: "provider", id: "model" },
+    })
+    expect(
+      Schema.decodeUnknownSync(PromptInput.Selection)({
+        agent: "build",
+        model: { providerID: "provider", id: "model" },
+      }),
+    ).toEqual(input)
+    expect(() =>
+      Schema.decodeUnknownSync(PromptInput.Selection)({ model: { providerID: "provider", id: "model" } }),
+    ).toThrow()
   })
 
   test("session inbox items omit the internal enqueue sequence", () => {

@@ -22,6 +22,8 @@ export type Input = {
   files?: PromptInput.Prompt["files"]
   agents?: PromptInput.Prompt["agents"]
   skills?: PromptInput.Prompt["skills"]
+  context?: PromptInput.Context
+  selection?: PromptInput.Selection
   metadata?: Record<string, unknown>
   delivery?: SessionInbox.Delivery
 }
@@ -40,6 +42,7 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
     const event = yield* hooks.trigger("session", "prompt", {
       sessionID: request.session.id,
       messageID: request.messageID,
+      selection: structuredClone(request.input.selection),
       prompt: structuredClone({
         text: request.input.text,
         files: request.input.files?.slice(),

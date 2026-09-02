@@ -4,7 +4,7 @@ import { PromptInput } from "@opencode/schema/prompt-input"
 import { SessionInbox } from "@opencode/schema/session-inbox"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Schema } from "effect"
-import { provider } from "../utils/app"
+import { holdRoute, provider, sessionHref } from "../utils/app"
 import type { MockServerConfig } from "../utils/mock-server"
 import { openSession } from "../utils/workspace"
 
@@ -14,6 +14,7 @@ const sessionID = "ses_session_queue_regression"
 const PromptBody = Schema.Struct({
   id: SessionMessage.ID.pipe(Schema.optional),
   ...PromptInput.Prompt.fields,
+  selection: PromptInput.Selection.pipe(Schema.optional),
   metadata: SessionInbox.UserPayload.fields.metadata,
   delivery: SessionInbox.Delivery.pipe(Schema.optional),
   resume: Schema.Boolean.pipe(Schema.optional),
@@ -95,6 +96,8 @@ function createQueueMock(seed: string[], messages: SessionMessageInfo[] = []) {
       const body = decodePromptBody(input.body)
       prompts.push(body)
       log.push(`prompt:${body.delivery ?? "steer"}`)
+      // The real server is first-admission-wins for a same-Session retry with the same ID.
+      if (rows.some((row) => row.id === body.id && row.sessionID === input.sessionID)) return
 
       const row: InboxRow = {
         id: body.id ?? `inb_mock_${sequence}`,
@@ -160,6 +163,7 @@ async function openQueue(
   mock: ReturnType<typeof createQueueMock>,
   followUpBehavior?: "queue" | "steer",
   revert?: string,
+  keybinds?: Record<string, string>,
 ) {
   const model = { id: "queue-model", name: "Queue Model" }
 
@@ -184,6 +188,7 @@ async function openQueue(
   }
 
   if (followUpBehavior) options.seed = { settings: { general: { followUpBehavior } } }
+  if (keybinds) options.seed = { settings: { ...options.seed?.settings, keybinds } }
   await openSession(page, options)
   const composer = page.locator('[data-component="composer"]')
 
@@ -220,7 +225,135 @@ test("follow-up preference controls Enter while Mod+Enter uses the alternate del
   await view.input.fill("steer this correction")
   await view.input.press("ControlOrMeta+Enter")
   await expect.poll(() => mock.prompts.map((prompt) => prompt.delivery)).toEqual(["queue", "steer"])
+  expect(mock.prompts[0].selection).toBeUndefined()
+  expect(mock.prompts[1].selection).toEqual({ agent: "build", model: { providerID: "opencode", id: "queue-model" } })
   await expect(view.input).toHaveText("")
+})
+
+for (const action of ["Undo", "Delete", "Move to queue"] as const) {
+  test(`${action} waits for optimistic admission before changing pending input`, async ({ page }) => {
+    const mock = createQueueMock([])
+    const view = await openQueue(page, mock, action === "Undo" ? "queue" : "steer")
+    const admission = await holdRoute(page, (url) => url.pathname === `/api/session/${sessionID}/prompt`, {
+      method: "POST",
+    })
+    await view.input.fill("Withdraw this input")
+    await view.input.press("Enter")
+    const request = await admission.arrived
+    const row =
+      action === "Undo"
+        ? view.rows.filter({ hasText: "Withdraw this input" })
+        : userRow(page, request.postDataJSON().id)
+    await row.hover()
+    const control = row.getByRole("button", { name: action })
+    const changed = page.waitForResponse(
+      (response) =>
+        response.request().method() !== "OPTIONS" &&
+        new URL(response.url()).pathname === `/api/session/${sessionID}/inbox/${request.postDataJSON().id}`,
+    )
+    await control.click()
+    if (action === "Undo") await expect(control).toBeDisabled()
+    expect(mock.changes).toEqual([])
+    admission.release()
+    expect((await changed).ok()).toBe(true)
+    await expect(view.rows).toHaveCount(action === "Move to queue" ? 1 : 0)
+    await expect(view.input).toHaveText(action === "Undo" ? "Withdraw this input" : "")
+    const change = action === "Move to queue" ? "queue" : "cancel"
+    expect(mock.changes).toEqual([{ inboxID: request.postDataJSON().id, action: change }])
+    expect(mock.log).toEqual([
+      action === "Undo" ? "prompt:queue" : "prompt:steer",
+      `${change}:${request.postDataJSON().id}`,
+    ])
+  })
+}
+
+test("Undo does not withdraw a follow-up submitted after the undo gesture", async ({ page }) => {
+  const mock = createQueueMock(
+    [],
+    [{ id: "msg_existing", type: "user", text: "Existing history", time: { created: 1 } }],
+  )
+  const view = await openQueue(page, mock, "steer", undefined, { "session.undo": "ctrl+alt+shift+u" })
+  const admission = await holdRoute(page, (url) => url.pathname === `/api/session/${sessionID}/prompt`, {
+    method: "POST",
+  })
+  await view.input.fill("First input")
+  await view.input.press("Enter")
+  const first = await admission.arrived
+  await expect(view.input).toHaveText("")
+  await expect(userRow(page, first.postDataJSON().id)).toContainText("First input")
+  await page.keyboard.press("Control+Alt+Shift+u")
+  await view.input.fill("Later input")
+  await view.input.press("Enter")
+  await expect(userRow(page, first.postDataJSON().id)).toContainText("First input")
+  admission.release()
+  await expect.poll(() => mock.prompts.map((prompt) => prompt.text)).toEqual(["First input", "Later input"])
+  await expect.poll(() => mock.changes).toEqual([{ inboxID: first.postDataJSON().id, action: "cancel" }])
+  await expect(view.input).toHaveText("First input")
+  await expect.poll(() => mock.rows.map((row) => row.payload.text)).toEqual(["Later input"])
+})
+
+test("a revert waiting behind admission restores only its captured session after navigation", async ({ page }) => {
+  const otherID = "ses_revert_other"
+  const message = { id: "msg_revert_owned", type: "user" as const, text: "Restore A", time: { created: 1 } }
+  const mock = createQueueMock([], [message])
+  const workspace = await openSession(page, {
+    name: "SessionQueueRegression",
+    sessions: [
+      { id: sessionID, title: "Session A" },
+      { id: otherID, title: "Session B" },
+    ],
+    pageMessages: (id) => ({ items: id === sessionID ? mock.messages : [] }),
+    inbox: () => mock.rows,
+    sessionStatus: () => ({ [sessionID]: { type: "running" } }),
+    onPrompt: mock.onPrompt,
+    onInboxChange: mock.onInboxChange,
+    events: mock.events,
+    seed: { settings: { general: { followUpBehavior: "queue" } } },
+  })
+  const admission = await holdRoute(page, (url) => url.pathname === `/api/session/${sessionID}/prompt`, {
+    method: "POST",
+  })
+  await workspace.editor.fill("Admit before revert")
+  await workspace.editor.press("Enter")
+  await admission.arrived
+  await expect(workspace.editor).toHaveText("")
+  const delivered = userRow(page, message.id)
+  await delivered.hover()
+  await delivered.getByRole("button", { name: "Revert message" }).click()
+  await page.locator(`a[data-titlebar-tab-link][href="${sessionHref(otherID)}"]`).click()
+  await expect(workspace.editor).toBeEditable()
+  await workspace.editor.fill("Keep B's draft")
+  const staged = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === `/api/session/${sessionID}/revert/stage`,
+  )
+  admission.release()
+  expect((await staged).ok()).toBe(true)
+  await expect(workspace.editor).toHaveText("Keep B's draft")
+  await page.locator(`a[data-titlebar-tab-link][href="${sessionHref(sessionID)}"]`).click()
+  await expect(workspace.editor).toHaveText("Restore A")
+})
+
+test("an edit refuses a revert the server has staged before its event reaches the client", async ({ page }) => {
+  const mock = createQueueMock(["Edit this input"])
+  const view = await openQueue(page, mock, "queue")
+  await view.rows.getByText("Edit this input", { exact: true }).click()
+  await expect(view.input).toHaveText("Edit this input")
+  await expect(view.input).toBeFocused()
+  await view.input.press("End")
+  await view.input.pressSequentially(", changed")
+  await expect(view.input).toHaveText("Edit this input, changed")
+  await page.route(
+    (url) => url.pathname === `/api/session/${sessionID}`,
+    (route) => {
+      if (route.request().method() !== "GET") return route.fallback()
+      return route.fulfill({ json: { data: { revert: { messageID: "msg_boundary" } } } })
+    },
+  )
+  await view.input.press("Enter")
+  await expect(page.getByText("Redo the revert before you reorder or edit queued prompts")).toBeVisible()
+  await expect(view.input).toHaveText("Edit this input, changed")
+  expect(mock.prompts).toEqual([])
+  expect(mock.changes).toEqual([])
 })
 
 test("dragging reorders queued prompts", async ({ page }) => {
@@ -298,7 +431,7 @@ for (const change of ["reorder", "edit"] as const) {
 
     // The replacements admitted before the failure are withdrawn; the originals stay in place.
     await expect.poll(() => mock.log.includes(`cancel:${mock.prompts.at(-1)?.id}`)).toBe(true)
-    await expect.poll(() => mock.changes.length).toBe(mock.prompts.length)
+    await expect.poll(() => mock.changes.length).toBe(new Set(mock.prompts.map((prompt) => prompt.id)).size)
     expect(mock.changes.every((entry) => entry.action === "cancel" && !entry.inboxID.startsWith("inb_seed_"))).toBe(
       true,
     )
@@ -445,6 +578,7 @@ test("editing a comment-only prompt keeps its notes once", async ({ page }) => {
   // With no display text, the editor shows the note itself, so the edit owns it as text.
   await view.rows.getByText(note, { exact: true }).click()
   await expect(view.input).toHaveText(note)
+  await expect(view.input).toBeFocused()
   await view.input.press("End")
   await view.input.pressSequentially(", please")
   await expect(view.input).toHaveText(`${note}, please`)
