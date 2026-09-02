@@ -167,12 +167,21 @@ export function createNewSessionComposerAdapter(props: {
             shell: (input) => afterCreation(() => serverSDK.api.session.shell(input)),
             switchAgent: (input) => afterCreation(() => serverSDK.api.session.switchAgent(input)),
             switchModel: (input) => afterCreation(() => serverSDK.api.session.switchModel(input)),
-            revert: { commit: (input) => afterCreation(() => serverSDK.api.session.revert.commit(input)) },
           },
           data: {
             location: data.location,
             session: {
               setStatus: data.session.setStatus,
+              mutate: (sessionID, operation) =>
+                data.session.mutate(sessionID, (mutation) =>
+                  operation({
+                    prompt: (input) =>
+                      mutation.prompt({
+                        ...input,
+                        gate: Promise.all([input.gate, afterCreation(async () => undefined)]),
+                      }),
+                  }),
+                ),
               prompt: (input) =>
                 data.session.prompt({
                   ...input,

@@ -26,12 +26,10 @@ export function visibleTimelineMessages(
       (item.type === "user" && item.delivery === "steer") || item.type === "synthetic" ? [item.id] : [],
     ),
   )
-
   if (queued.size === 0 && inputs.size === 0 && !revertMessageID) return messages
 
-  const visible = messages.filter(
-    (message) => !queued.has(message.id) && (!revertMessageID || message.id < revertMessageID),
-  )
+  const boundary = revertMessageID ? messages.findIndex((message) => message.id === revertMessageID) : messages.length
+  const visible = (boundary < 0 ? [] : messages.slice(0, boundary)).filter((message) => !queued.has(message.id))
 
   if (inputs.size === 0) return visible
 

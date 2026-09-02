@@ -1,6 +1,6 @@
 import type { SessionMessageInfo } from "@opencode/client/promise"
 import { expect, test, type Page } from "@playwright/test"
-import { seed, sessionHref } from "../utils/app"
+import { pageMessagesFrom, seed, sessionHref } from "../utils/app"
 import { fixture, mockStressTimeline } from "../utils/session-fixture"
 import { expectSessionTitle } from "../utils/waits"
 import { mockWorkspace, openSession } from "../utils/workspace"
@@ -325,6 +325,35 @@ test.describe("revert", () => {
 
     expect((await cleared).ok()).toBe(true)
     expect(staged).toEqual([])
+  })
+
+  test("undo loads the staged boundary from an older page", async ({ page }) => {
+    const sessionID = "ses_paginated_revert"
+    const previous = { id: "msg_fff_previous", type: "user" as const, text: "Previous prompt", time: { created: 1 } }
+    const history = [
+      previous,
+      { id: "msg_000_boundary", type: "user" as const, text: "Boundary prompt", time: { created: 2 } },
+      ...Array.from({ length: 200 }, (_, index) => ({
+        id: `msg_after_${index}`,
+        type: "user" as const,
+        text: "Reverted prompt",
+        time: { created: index + 3 },
+      })),
+    ]
+    const staged: { sessionID: string; messageID: string }[] = []
+    const { editor } = await openSession(page, {
+      name: "PaginatedRevert",
+      sessions: [{ id: sessionID, title: "Paginated revert", revert: { messageID: "msg_000_boundary" } }],
+      pageMessages: pageMessagesFrom({ [sessionID]: history }),
+      onRevertStage: (input) => staged.push(input),
+    })
+    await editor.pressSequentially("/undo")
+    await expect(
+      page.locator('[data-component="composer-suggestions"] [data-suggestion-id][data-active]'),
+    ).toContainText("/undo")
+    await editor.press("Enter")
+    await expect(editor).toHaveText("Previous prompt")
+    expect(staged).toEqual([{ sessionID, messageID: previous.id }])
   })
 
   test("hides revert actions in a child session", async ({ page }) => {
