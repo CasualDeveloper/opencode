@@ -3858,6 +3858,12 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
@@ -3879,6 +3885,12 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
@@ -3900,6 +3912,12 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
@@ -3921,6 +3939,12 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
@@ -3942,10 +3966,43 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
   }["skills"]
+  readonly context?: {
+    readonly id?: string | null
+    readonly text: string
+    readonly files?: ReadonlyArray<{
+      readonly uri: string
+      readonly name?: string
+      readonly description?: string
+      readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
+    }>
+    readonly agents?: ReadonlyArray<{
+      readonly name: string
+      readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
+    }>
+    readonly skills?: ReadonlyArray<{
+      readonly id: string
+      readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
+    }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
+    readonly metadata?: { readonly [x: string]: JsonValue }
+    readonly delivery?: ("steer" | "queue") | null
+    readonly resume?: boolean | null
+  }["context"]
   readonly metadata?: {
     readonly id?: string | null
     readonly text: string
@@ -3963,6 +4020,12 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
@@ -3984,6 +4047,12 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
@@ -4005,6 +4074,12 @@ export type SessionPromptInput = {
       readonly id: string
       readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
     }>
+    readonly context?: {
+      readonly id: string
+      readonly text: string
+      readonly description?: string
+      readonly metadata?: { readonly [x: string]: JsonValue }
+    } | null
     readonly metadata?: { readonly [x: string]: JsonValue }
     readonly delivery?: ("steer" | "queue") | null
     readonly resume?: boolean | null
