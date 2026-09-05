@@ -22,6 +22,7 @@ const env = {
   OPENCODE_BUMP: process.env["OPENCODE_BUMP"],
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
   OPENCODE_RELEASE: process.env["OPENCODE_RELEASE"],
+  OPENCODE_BASE_SHA: process.env["OPENCODE_BASE_SHA"],
 }
 const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
@@ -33,6 +34,12 @@ const IS_PREVIEW = CHANNEL !== "latest"
 
 const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
+  if (CHANNEL === "casual") {
+    const base = env.OPENCODE_BASE_SHA
+      ? env.OPENCODE_BASE_SHA
+      : await $`git merge-base origin/v2 HEAD`.text().then((x) => x.trim())
+    return `0.0.0-${CHANNEL}-${base.slice(0, 10)}-${previewBuildNumber()}`
+  }
   if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${previewBuildNumber()}`
   const version = await fetch("https://registry.npmjs.org/@opencode-ai%2fcli/latest")
     .then((res) => {
