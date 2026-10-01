@@ -20,12 +20,14 @@ const outdir = path.resolve(
 if (outdir === dir) throw new Error("--outdir must not be the package directory")
 process.chdir(dir)
 
-await rm(outdir, { recursive: true, force: true })
-
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const requestedTarget = process.argv.find((arg) => arg.startsWith("--target="))?.slice("--target=".length)
-const skipInstall = process.argv.includes("--skip-install")
+const localFlag = process.argv.includes("--local")
+if (localFlag && (process.platform !== "darwin" || process.arch !== "arm64")) {
+  throw new Error("--local requires macOS arm64")
+}
+const skipInstall = process.argv.includes("--skip-install") || localFlag
 const skipWebUi = process.argv.includes("--skip-web-ui")
 const solidPlugin = createSolidTransformPlugin()
 const releaseAssets = new Map<string, Promise<Map<string, string>>>()
@@ -53,7 +55,7 @@ const allTargets: {
 const targets =
   requestedTarget !== undefined
     ? allTargets.filter((item) => targetName(item) === requestedTarget)
-    : singleFlag
+    : singleFlag || localFlag
       ? allTargets.filter((item) => {
           if (item.os !== process.platform || item.arch !== process.arch) return false
           if (item.avx2 === false) return baselineFlag
@@ -61,6 +63,11 @@ const targets =
         })
       : allTargets
 if (!targets.length) throw new Error(`Unknown build target: ${requestedTarget}`)
+if (localFlag && (targets.length !== 1 || targets[0].os !== "darwin" || targets[0].arch !== "arm64")) {
+  throw new Error(`--local requires the ${binary}-darwin-arm64 target`)
+}
+
+await rm(outdir, { recursive: true, force: true })
 
 if (!skipInstall)
   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]} @opencode-ai/pty@${pkg.dependencies["@opencode-ai/pty"]}`
@@ -120,6 +127,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
   const target = targetName(item)
   const name = target.replace(binary, "cli")
   const executablePath = await compileExecutable(item)
+  const binaryPath = path.join(outdir, name, "bin", binary)
   console.log(`building ${name}`)
   const result = await Bun.build({
     entrypoints: ["./src/index.ts"],
@@ -138,7 +146,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       autoloadPackageJson: true,
       target: target.replace(binary, "bun") as Bun.Build.CompileTarget,
       ...(executablePath ? { executablePath } : {}),
-      outfile: path.join(outdir, name, "bin", binary),
+      outfile: binaryPath,
       execArgv: [
         "--smol",
         `--user-agent=opencode/${Script.channel}/${Script.version}/cli`,
@@ -165,6 +173,10 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
     process.exit(1)
   }
   verifySimulationGraph(simulationInputs)
+
+  if (localFlag) {
+    await $`codesign --verify --strict ${binaryPath}`
+  }
 
   await Bun.write(
     path.join(outdir, name, "package.json"),
