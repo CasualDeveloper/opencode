@@ -404,7 +404,7 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
             if (!Object.prototype.hasOwnProperty.call(current, action)) return current
             const next = { ...current }
             delete next[action]
-            return next
+            return reconcile(next)(current)
           })
         },
         resetAll() {
