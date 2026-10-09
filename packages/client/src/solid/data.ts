@@ -473,10 +473,7 @@ export function createData(config: CreateDataInput) {
   // to exist server-side instead of failing with "not found".
   const creating = new Map<string, Promise<unknown>>()
 
-  // Per-session send chain: prompts, compactions and the requests a caller
-  // puts in it with `sequence` must reach the server in submission order.
-  // Each waits for the previous POST to settle, so one failure does not block
-  // the next.
+  // Order admissions, withdrawals, Undo and sequenced requests so cancellation cannot overtake admission.
   const sending = new Map<string, Promise<unknown>>()
   const messageLoads = new Map<string, Promise<unknown>>()
   const compacting = new Map<string, { id: string; observed: Set<string>; request: Promise<SessionInboxCompaction> }>()
@@ -494,7 +491,7 @@ export function createData(config: CreateDataInput) {
 
   // Capture creation before settlement clears its entry, so dependent RPCs still see a failed create. The chain's
   // link is the request itself, or `link` of it for a request that stays open after the server has it.
-  function sendAdmission<Value>(
+  function sendInOrder<Value>(
     sessionID: string,
     send: () => Promise<Value>,
     gate?: Promise<unknown>,
@@ -511,6 +508,20 @@ export function createData(config: CreateDataInput) {
       (link?.(request) ?? request).catch(() => undefined),
     )
     return request
+  }
+
+  // Cancellation is idempotent, so only the projected message shows whether delivery won.
+  async function withdrawInput(sessionID: string, inboxID: string) {
+    await api().session.inbox.cancel({ sessionID, inboxID })
+    return api()
+      .session.message.get({ sessionID, messageID: inboxID })
+      .then(
+        () => "delivered" as const,
+        (error: unknown) => {
+          if (isMessageNotFoundError(error)) return "withdrawn" as const
+          throw error
+        },
+      )
   }
 
   // Upsert an admitted inbox item into pending and (for user and synthetic
@@ -1742,6 +1753,9 @@ export function createData(config: CreateDataInput) {
             store.session.pending[sessionID]?.some((item) => item.id === inboxID && item.type !== "compaction") ?? false
           )
         },
+        withdraw(input: { sessionID: string; inboxID: string }) {
+          return sendInOrder(input.sessionID, () => withdrawInput(input.sessionID, input.inboxID))
+        },
       },
       pending: {
         list(sessionID: string) {
@@ -1886,7 +1900,7 @@ export function createData(config: CreateDataInput) {
         // speculative row on an echo, and remember consumed IDs until the POST
         // settles so its older response cannot resurrect a queued row.
         const observed = new Set<string>()
-        const request = sendAdmission(input.sessionID, async () => {
+        const request = sendInOrder(input.sessionID, async () => {
           if (input.model) await api().session.switchModel({ sessionID: input.sessionID, model: input.model })
           return api().session.compact({ sessionID: input.sessionID, id })
         })
@@ -1919,7 +1933,7 @@ export function createData(config: CreateDataInput) {
       // server, whichever is first.
       sequence<Value>(sessionID: string, send: () => Promise<Value>, prepare?: () => Promise<unknown>) {
         const left = Promise.withResolvers<void>()
-        return sendAdmission(
+        return sendInOrder(
           sessionID,
           async () => {
             await prepare?.()
@@ -1976,7 +1990,7 @@ export function createData(config: CreateDataInput) {
             payload,
           })
         }
-        return sendAdmission(
+        return sendInOrder(
           request.sessionID,
           async () => {
             const prepared = await prepare?.()
@@ -1995,6 +2009,19 @@ export function createData(config: CreateDataInput) {
           // acknowledged: anything else is server state.
           if (fresh && outbox.delete(id)) retractLocal(request.sessionID, id)
           throw error
+        })
+      },
+      // A loaded message that is no longer pending has left the inbox, so only a pending or unloaded one
+      // needs the server to decide.
+      undo(input: { sessionID: string; messageID: string }) {
+        return sendInOrder(input.sessionID, async () => {
+          const delivered =
+            !result.session.input.has(input.sessionID, input.messageID) &&
+            result.session.message.get(input.sessionID, input.messageID) !== undefined
+          if (!delivered && (await withdrawInput(input.sessionID, input.messageID)) === "withdrawn") return
+          await api().session.interrupt({ sessionID: input.sessionID })
+          await api().experimental.session.wait({ sessionID: input.sessionID })
+          await api().session.revert.stage({ sessionID: input.sessionID, messageID: input.messageID })
         })
       },
       sync(sessionID: string, options?: { children?: boolean }) {
