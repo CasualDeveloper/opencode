@@ -23,14 +23,7 @@ import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
 import { useTheme, useThemes } from "../../context/theme"
-import {
-  BoxRenderable,
-  ScrollBoxRenderable,
-  addDefaultParsers,
-  TextAttributes,
-  RGBA,
-  MouseEvent,
-} from "@opentui/core"
+import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA, MouseEvent } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import {
   mediaHashFromUri,
@@ -694,13 +687,13 @@ export function Session(props: {
         const active = prompt()
         return Boolean(
           !sessionDisposed &&
-            route.sessionID === event.data.sessionID &&
-            active &&
-            active.current.text === expectedText &&
-            (active.current.files?.length ?? 0) === expectedFiles &&
-            (active.current.agents?.length ?? 0) === expectedAgents &&
-            (active.current.skills?.length ?? 0) === expectedSkills &&
-            active.current.pasted.length === expectedPasted,
+          route.sessionID === event.data.sessionID &&
+          active &&
+          active.current.text === expectedText &&
+          (active.current.files?.length ?? 0) === expectedFiles &&
+          (active.current.agents?.length ?? 0) === expectedAgents &&
+          (active.current.skills?.length ?? 0) === expectedSkills &&
+          active.current.pasted.length === expectedPasted,
         )
       }
       const canOpen = () =>
@@ -780,10 +773,13 @@ export function Session(props: {
     (await runPendingAction(inboxID, () => requestPending(action, inboxID))) ?? false
   // The cancel releases blobs nothing else references, so media refs load into the draft first. Resolves with the
   // composer it wrote to, if any, once the prompt is back; undefined if the cancel failed or was already running.
-  const undoPending = (inboxID: string, message: ProjectedPrompt, failureLabel?: string) =>
+  const undoPending = (inboxID: string, message: ProjectedPrompt) =>
     runPendingAction(inboxID, async () => {
       const restored = await restorePrompt(message)
-      if (!(await requestPending("cancel", inboxID, failureLabel))) return
+      if ((await data.session.input.withdraw({ sessionID, inboxID })) === "delivered") {
+        toast.show({ message: "Prompt was already sent. Use /undo to take it back", variant: "warning" })
+        return
+      }
       return { composer: appendToSessionPrompt(sessionID, restored, renderer.widthMethod) }
     })
   const openQueuedPrompts = () =>
@@ -824,7 +820,7 @@ export function Session(props: {
                 toast.show({ message: "Leave shell mode before undoing a queued prompt", variant: "error" })
                 return
               }
-              void undoPending(queued.id, queued.payload, "undo")
+              void undoPending(queued.id, queued.payload)
                 .then((undone) => {
                   if (!undone || sessionDisposed) return
                   dialog.clear()
@@ -1131,15 +1127,11 @@ export function Session(props: {
           dialog.clear()
           return
         }
-        const undo = pendingDeliveries().has(message.id)
-          ? undoPending(message.id, message)
-          : (async () => {
-              const restored = await restorePrompt(message)
-              await client.api.session.interrupt({ sessionID })
-              await client.api.experimental.session.wait({ sessionID })
-              await client.api.session.revert.stage({ sessionID, messageID: message.id })
-              appendToSessionPrompt(sessionID, restored, renderer.widthMethod)
-            })()
+        const undo = (async () => {
+          const restored = await restorePrompt(message)
+          await data.session.undo({ sessionID, messageID: message.id })
+          appendToSessionPrompt(sessionID, restored, renderer.widthMethod)
+        })()
         void undo.catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
         dialog.clear()
       },
@@ -1279,7 +1271,9 @@ export function Session(props: {
       },
       run: () => {
         const lastAssistantMessage = messagesBeforeRevert().findLast(
-          (msg) => msg.type === "assistant" || (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
+          (msg) =>
+            msg.type === "assistant" ||
+            (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
         )
         if (!lastAssistantMessage) {
           toast.show({ message: "No assistant messages found", variant: "error" })
@@ -1584,9 +1578,7 @@ export function Session(props: {
                   onMouseOut={() => setLatestHovered(false)}
                   onMouseUp={toBottom}
                 >
-                  <text
-                    fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
-                  >
+                  <text fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}>
                     Jump to latest ↓
                   </text>
                 </box>
@@ -1632,12 +1624,7 @@ export function Session(props: {
                     }}
                   </Show>
                 </Match>
-                <Match
-                  when={
-                    session() &&
-                    currentLocation.error?.location.directory === session()!.location.directory
-                  }
-                >
+                <Match when={session() && currentLocation.error?.location.directory === session()!.location.directory}>
                   <SessionLocationMissing
                     directory={session()!.location.directory}
                     projectID={session()!.projectID}
@@ -2934,9 +2921,7 @@ function BlockTool(props: BlockToolProps) {
               <Show
                 when={props.spinner}
                 fallback={
-                  <text
-                    fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
-                  >
+                  <text fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}>
                     {title()}
                   </text>
                 }
@@ -3124,11 +3109,7 @@ function ShellDisplay(props: {
           <Show
             when={isRunning()}
             fallback={
-              <text
-                fg={theme.text.base}
-                wrapMode={expanded() ? "word" : "char"}
-                maxHeight={expanded() ? undefined : 2}
-              >
+              <text fg={theme.text.base} wrapMode={expanded() ? "word" : "char"} maxHeight={expanded() ? undefined : 2}>
                 {limitedInput()}
               </text>
             }
@@ -3229,7 +3210,9 @@ function Read(props: ToolProps) {
         Read {pathFormatter.format(stringValue(props.input.path))}
         <Show when={props.input.offset !== undefined || props.input.limit !== undefined}>
           :{finiteNumber(props.input.offset) || 1}-
-          {props.input.limit ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1 : ""}
+          {props.input.limit
+            ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1
+            : ""}
         </Show>
       </InlineTool>
       <For each={loaded()}>
