@@ -649,11 +649,11 @@ export function Session(props: {
       const current = prompt()
       const wasEmpty = Boolean(
         current &&
-          !current.current.text.trim() &&
-          !current.current.files?.length &&
-          !current.current.agents?.length &&
-          !current.current.skills?.length &&
-          !current.current.pasted.length,
+        !current.current.text.trim() &&
+        !current.current.files?.length &&
+        !current.current.agents?.length &&
+        !current.current.skills?.length &&
+        !current.current.pasted.length,
       )
       if (!wasEmpty || !current) return
       const list = messages()
@@ -680,13 +680,13 @@ export function Session(props: {
         const active = prompt()
         return Boolean(
           !sessionDisposed &&
-            route.sessionID === event.data.sessionID &&
-            active &&
-            active.current.text === expectedText &&
-            (active.current.files?.length ?? 0) === expectedFiles &&
-            (active.current.agents?.length ?? 0) === expectedAgents &&
-            (active.current.skills?.length ?? 0) === expectedSkills &&
-            active.current.pasted.length === expectedPasted,
+          route.sessionID === event.data.sessionID &&
+          active &&
+          active.current.text === expectedText &&
+          (active.current.files?.length ?? 0) === expectedFiles &&
+          (active.current.agents?.length ?? 0) === expectedAgents &&
+          (active.current.skills?.length ?? 0) === expectedSkills &&
+          active.current.pasted.length === expectedPasted,
         )
       }
       const canOpen = () =>
@@ -745,7 +745,7 @@ export function Session(props: {
     }),
   )
   const runPendingAction = createSingleFlight<string>()
-  const mutatePending = async (action: PendingAction, inboxID: string, failureLabel?: string) => {
+  const mutatePending = async (action: PendingAction, inboxID: string) => {
     const result = await runPendingAction(inboxID, async () => {
       const request =
         action === "steer"
@@ -758,7 +758,7 @@ export function Session(props: {
         (error) => error,
       )
       if (!error) return true
-      const label = failureLabel ?? (action === "cancel" ? "delete" : action)
+      const label = action === "cancel" ? "delete" : action
       toast.show({ title: `Failed to ${label} pending prompt`, message: errorMessage(error), variant: "error" })
       return false
     })
@@ -802,19 +802,37 @@ export function Session(props: {
                 toast.show({ message: "Leave shell mode before undoing a queued prompt", variant: "error" })
                 return
               }
-              void mutatePending("cancel", queued.id, "undo").then((undone) => {
-                if (!undone) return
-                target.setMode("normal")
-                target.set(
-                  appendPrompt(
-                    target.current,
-                    { ...projectedPromptInput(queued.payload), pasted: [] },
-                    renderer.widthMethod,
-                  ),
-                )
-                dialog.clear()
-                target.focus()
-              })
+              void runPendingAction(queued.id, () =>
+                data.session.input.withdraw({ sessionID: route.sessionID, inboxID: queued.id }),
+              ).then(
+                (outcome) => {
+                  if (!outcome) return
+                  if (outcome === "delivered") {
+                    toast.show({
+                      message: "Prompt was already sent. Use /undo to take it back",
+                      variant: "warning",
+                    })
+                    return
+                  }
+                  target.setMode("normal")
+                  target.set(
+                    appendPrompt(
+                      target.current,
+                      { ...projectedPromptInput(queued.payload), pasted: [] },
+                      renderer.widthMethod,
+                    ),
+                  )
+                  dialog.clear()
+                  target.focus()
+                },
+                (error) => {
+                  toast.show({
+                    title: "Failed to undo pending prompt",
+                    message: errorMessage(error),
+                    variant: "error",
+                  })
+                },
+              )
             },
           },
         ]}
@@ -1115,21 +1133,11 @@ export function Session(props: {
           dialog.clear()
           return
         }
-        const sessionID = route.sessionID
         const target = prompt()
-        void (async () => {
-          if (pendingDeliveries().has(message.id)) {
-            if (!(await mutatePending("cancel", message.id))) return
-          } else {
-            await client.api.session.interrupt({ sessionID })
-            await client.api.session.wait({ sessionID })
-            await client.api.session.revert.stage({ sessionID, messageID: message.id })
-          }
-          target?.set({
-            ...projectedPromptInput(message),
-            pasted: [],
-          })
-        })().catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
+        void data.session
+          .undo({ sessionID: route.sessionID, messageID: message.id })
+          .then(() => target?.set({ ...projectedPromptInput(message), pasted: [] }))
+          .catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
         dialog.clear()
       },
     },
@@ -1268,7 +1276,9 @@ export function Session(props: {
       },
       run: () => {
         const lastAssistantMessage = messagesBeforeRevert().findLast(
-          (msg) => msg.type === "assistant" || (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
+          (msg) =>
+            msg.type === "assistant" ||
+            (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
         )
         if (!lastAssistantMessage) {
           toast.show({ message: "No assistant messages found", variant: "error" })
@@ -1578,9 +1588,7 @@ export function Session(props: {
                   onMouseOut={() => setLatestHovered(false)}
                   onMouseUp={toBottom}
                 >
-                  <text
-                    fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
-                  >
+                  <text fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}>
                     Jump to latest ↓
                   </text>
                 </box>
@@ -1626,12 +1634,7 @@ export function Session(props: {
                     }}
                   </Show>
                 </Match>
-                <Match
-                  when={
-                    session() &&
-                    currentLocation.error?.location.directory === session()!.location.directory
-                  }
-                >
+                <Match when={session() && currentLocation.error?.location.directory === session()!.location.directory}>
                   <SessionLocationMissing
                     directory={session()!.location.directory}
                     projectID={session()!.projectID}
@@ -2927,9 +2930,7 @@ function BlockTool(props: BlockToolProps) {
               <Show
                 when={props.spinner}
                 fallback={
-                  <text
-                    fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
-                  >
+                  <text fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}>
                     {title()}
                   </text>
                 }
@@ -3117,11 +3118,7 @@ function ShellDisplay(props: {
           <Show
             when={isRunning()}
             fallback={
-              <text
-                fg={theme.text.base}
-                wrapMode={expanded() ? "word" : "char"}
-                maxHeight={expanded() ? undefined : 2}
-              >
+              <text fg={theme.text.base} wrapMode={expanded() ? "word" : "char"} maxHeight={expanded() ? undefined : 2}>
                 {limitedInput()}
               </text>
             }
@@ -3222,7 +3219,9 @@ function Read(props: ToolProps) {
         Read {pathFormatter.format(stringValue(props.input.path))}
         <Show when={props.input.offset !== undefined || props.input.limit !== undefined}>
           :{finiteNumber(props.input.offset) || 1}-
-          {props.input.limit ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1 : ""}
+          {props.input.limit
+            ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1
+            : ""}
         </Show>
       </InlineTool>
       <For each={loaded()}>
