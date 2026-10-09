@@ -2158,7 +2158,7 @@
             }
           }
         },
-        "description": "Durably admit one session input and schedule agent-loop execution unless resume is false.",
+        "description": "Durably admit optional synthetic context followed by one user input and schedule agent-loop execution unless resume is false. Context requires steer delivery. Selection intent applies atomically to a winning new admission only when both requested and prepared delivery are steer; queues and same-ID retries do not reapply selection.",
         "summary": "Send message",
         "requestBody": {
           "content": {
@@ -2197,6 +2197,26 @@
                     "items": {
                       "$ref": "#/components/schemas/PromptInput.SkillAttachment"
                     }
+                  },
+                  "context": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/PromptInput.Context"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "selection": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/PromptInput.Selection"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "metadata": {
                     "type": "object"
@@ -17689,6 +17709,26 @@
         "required": ["id", "name"],
         "additionalProperties": false
       },
+      "PromptInput.Context": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^msg_"
+          },
+          "text": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        },
+        "required": ["id", "text"],
+        "additionalProperties": false
+      },
       "PromptInput.FileAttachment": {
         "type": "object",
         "properties": {
@@ -17706,6 +17746,19 @@
           }
         },
         "required": ["uri"],
+        "additionalProperties": false
+      },
+      "PromptInput.Selection": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "$ref": "#/components/schemas/Model.Ref"
+          }
+        },
+        "required": ["agent", "model"],
         "additionalProperties": false
       },
       "PromptInput.SkillAttachment": {
