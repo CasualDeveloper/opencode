@@ -398,6 +398,8 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         payload: Schema.Struct({
           id: SessionMessage.ID.pipe(Schema.optional),
           ...PromptInput.Prompt.fields,
+          context: PromptInput.Context.pipe(Schema.optional),
+          selection: PromptInput.Selection.pipe(Schema.optional),
           metadata: SessionInbox.UserPayload.fields.metadata,
           delivery: SessionInbox.Delivery.pipe(Schema.optional),
           resume: Schema.Boolean.pipe(Schema.optional),
@@ -410,7 +412,8 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           OpenApi.annotations({
             identifier: "session.prompt",
             summary: "Send message",
-            description: "Durably admit one session input and schedule agent-loop execution unless resume is false.",
+            description:
+              "Durably admit optional synthetic context followed by one user input and schedule agent-loop execution unless resume is false. Context requires steer delivery. Selection intent applies atomically to a winning new admission only when both requested and prepared delivery are steer; queues and same-ID retries do not reapply selection.",
           }),
         ),
     )
