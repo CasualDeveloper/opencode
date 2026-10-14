@@ -252,6 +252,8 @@ export const make = Effect.gen(function* () {
                 ),
               )
             : undefined
+        // Raw failures skip the provider-event snapshot wait. Keep readiness cancellable before first publication.
+        if (llmError && !publisher.hasStarted()) yield* restore(Fiber.join(pendingStartSnapshot))
         if (llmError && retry?.retry && !recorded.outputStarted) {
           // Retry state projects onto the existing assistant, even before it has produced output.
           yield* publisher.startAssistant()
