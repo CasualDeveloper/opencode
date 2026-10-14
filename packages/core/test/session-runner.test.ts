@@ -243,6 +243,7 @@ const makeRunnerState = (compaction?: SessionRunnerModel.Resolved["compaction"])
     currentModel: model,
     compaction,
     modelResolveHook: resolvesModel,
+    captureSnapshot: Effect.succeed<Snapshot.ID | undefined>(undefined),
     systemBaseline: "Initial context",
     systemRemoved: false,
     systemUnavailable: false,
@@ -454,7 +455,15 @@ const layer = Layer.unwrap(
       small: () => Effect.undefined,
     })
     const replacements: LayerNode.Replacements = [
-      Snapshot.node.replace(Snapshot.noopLayer),
+      Snapshot.node.replace(
+        Layer.effect(
+          Snapshot.Service,
+          Effect.gen(function* () {
+            const snapshots = yield* Snapshot.Service
+            return Snapshot.Service.of({ ...snapshots, capture: () => Effect.suspend(() => state.captureSnapshot) })
+          }),
+        ).pipe(Layer.provide(Snapshot.noopLayer)),
+      ),
       LayerNodePlatform.llmClient.replace(testLLM),
       SessionRunnerModel.node.replace(models),
       InstructionBuiltIns.node.replace(systemContext),
@@ -2097,9 +2106,7 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(last)).toEqual(["First", "Fourth"])
     expect(last.system.map((part) => part.text).join("\n")).not.toContain("Entered mode")
     // Clients still see every message; only the model context hides the stale update.
-    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([
-      { text: "Entered mode" },
-    ])
+    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([{ text: "Entered mode" }])
   })
 
   scenario("uses the selected model family prompt when the agent does not override it", function* (s) {
@@ -5854,6 +5861,53 @@ describe("SessionRunnerLLM", () => {
     yield* s.resume
     expect(messageRoles(s.requests[0])).toEqual(["user", "assistant", "tool"])
   })
+
+  for (const failure of [
+    { name: "retryable", error: providerUnavailable },
+    { name: "terminal", error: invalidRequest },
+  ]) {
+    scenario(`interrupts ${failure.name} pre-output failure while its start snapshot is pending`, function* (s) {
+      const started = yield* Deferred.make<void>()
+      const released = yield* Deferred.make<Snapshot.ID | undefined>()
+      const stopped = yield* Deferred.make<void>()
+      const failed = yield* Deferred.make<void>()
+      const hooks = yield* PluginHooks.Service
+      const execution = yield* SessionExecution.Service
+      s.captureSnapshot = Deferred.succeed(started, undefined).pipe(
+        Effect.andThen(Deferred.await(released)),
+        Effect.ensuring(Deferred.succeed(stopped, undefined)),
+      )
+      yield* hooks.register("session", "retry", () => Deferred.succeed(failed, undefined))
+      yield* s.admit("Interrupt before the first snapshot")
+      yield* s.llm.push(Stream.fail(failure.error()))
+
+      try {
+        const run = yield* s.resume.pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+        yield* Deferred.await(failed)
+        yield* Effect.yieldNow
+        yield* s.session.interrupt(sessionID)
+        const idle = yield* execution
+          .awaitIdle(sessionID)
+          .pipe(Effect.timeout("1 second"), Effect.exit, Effect.forkScoped)
+        yield* TestClock.adjust("1 second")
+        expect(Exit.isSuccess(yield* Fiber.join(idle))).toBe(true)
+        const exited = yield* Fiber.await(run)
+        expect(Exit.isFailure(exited) && Cause.hasInterruptsOnly(exited.cause)).toBe(true)
+        expect(yield* Deferred.isDone(stopped)).toBe(true)
+        expect(yield* Deferred.isDone(released)).toBe(false)
+        expect(
+          (yield* recordedEventTypes(sessionID)).filter(
+            (type) => type.startsWith("session.step.") || type.startsWith("session.tool."),
+          ),
+        ).toEqual([])
+        expect((yield* s.context).filter((message) => message.type === "assistant")).toEqual([])
+      } finally {
+        // A regressed uninterruptible runner must not strand the test's scope after an assertion fails.
+        yield* Deferred.succeed(released, undefined)
+      }
+    })
+  }
 
   scenario("interrupts a blocked step without local tool execution", function* (s) {
     yield* s.admit("Interrupt provider")
