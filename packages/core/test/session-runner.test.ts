@@ -5562,6 +5562,53 @@ describe("SessionRunnerLLM", () => {
     }
   })
 
+  for (const failure of [
+    { name: "retryable", error: providerUnavailable },
+    { name: "terminal", error: invalidRequest },
+  ]) {
+    scenario(`interrupts ${failure.name} pre-output failure while its start snapshot is pending`, function* (s) {
+      const started = yield* Deferred.make<void>()
+      const released = yield* Deferred.make<Snapshot.ID | undefined>()
+      const stopped = yield* Deferred.make<void>()
+      const failed = yield* Deferred.make<void>()
+      const hooks = yield* PluginHooks.Service
+      const execution = yield* SessionExecution.Service
+      s.captureSnapshot = Deferred.succeed(started, undefined).pipe(
+        Effect.andThen(Deferred.await(released)),
+        Effect.ensuring(Deferred.succeed(stopped, undefined)),
+      )
+      yield* hooks.register("session", "retry", () => Deferred.succeed(failed, undefined))
+      yield* s.admit("Interrupt before the first snapshot")
+      yield* s.llm.push(Stream.fail(failure.error()))
+
+      try {
+        const run = yield* s.resume.pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+        yield* Deferred.await(failed)
+        yield* Effect.yieldNow
+        yield* s.session.interrupt(sessionID)
+        const idle = yield* execution
+          .awaitIdle(sessionID)
+          .pipe(Effect.timeout("1 second"), Effect.exit, Effect.forkScoped)
+        yield* TestClock.adjust("1 second")
+        expect(Exit.isSuccess(yield* Fiber.join(idle))).toBe(true)
+        const exited = yield* Fiber.await(run)
+        expect(Exit.isFailure(exited) && Cause.hasInterruptsOnly(exited.cause)).toBe(true)
+        expect(yield* Deferred.isDone(stopped)).toBe(true)
+        expect(yield* Deferred.isDone(released)).toBe(false)
+        expect(
+          (yield* recordedEventTypes(sessionID)).filter(
+            (type) => type.startsWith("session.step.") || type.startsWith("session.tool."),
+          ),
+        ).toEqual([])
+        expect((yield* s.context).filter((message) => message.type === "assistant")).toEqual([])
+      } finally {
+        // A regressed uninterruptible runner must not strand the test's scope after an assertion fails.
+        yield* Deferred.succeed(released, undefined)
+      }
+    })
+  }
+
   scenario("interrupts a blocked step without local tool execution", function* (s) {
     yield* s.admit("Interrupt provider")
     const stream = yield* s.llm.gate()
