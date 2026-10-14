@@ -169,13 +169,22 @@ export const make = Effect.fn("Session.make")(function* () {
           // services, so projections see its config whoever called prompt.
           return yield* Effect.gen(function* () {
             const item = yield* restore(SessionPrompt.prepare({ session, messageID, input }))
-            // Commit a staged revert only after preparation succeeds, before admitting new work.
-            if (session.revert) yield* SessionRevert.commit(bus, session)
-            return yield* admission.admit({
-              id: messageID,
-              sessionID: session.id,
-              item,
-            })
+            return yield* SessionInbox.serialized(
+              sessionID,
+              Effect.gen(function* () {
+                const existing = yield* admission.reconcile({
+                  id: messageID,
+                  sessionID,
+                  type: "user",
+                  delivery: item.delivery,
+                })
+                if (existing) return existing
+                // Preparation may overlap staging; finalize against the current boundary.
+                const current = yield* get(sessionID)
+                if (current.revert) yield* SessionRevert.commit(bus, current)
+                return yield* admission.admit({ id: messageID, sessionID, item })
+              }),
+            )
           }).pipe(
             instances.provide(session),
             Effect.provideService(Database.Service, database),
@@ -335,8 +344,16 @@ export const make = Effect.fn("Session.make")(function* () {
   ) {
     const session = yield* get(sessionID)
     if (yield* execution.isActive(sessionID)) return yield* new BusyError({ sessionID })
-    return yield* SessionRevert.stage({ session, messageID: input.messageID, files: input.files }).pipe(
-      Effect.provideService(Instance.Service, instances),
+    // Location selection can initialize plugins; keep it outside the mutation lock.
+    return yield* SessionInbox.serialized(
+      sessionID,
+      Effect.gen(function* () {
+        const current = yield* get(sessionID)
+        if (yield* execution.isActive(sessionID)) return yield* new BusyError({ sessionID })
+        return yield* SessionRevert.stage({ session: current, messageID: input.messageID, files: input.files })
+      }),
+    ).pipe(
+      instances.provide(session),
       Effect.provideService(Database.Service, database),
       Effect.provideService(Bus.Service, bus),
     )
