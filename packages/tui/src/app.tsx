@@ -49,7 +49,10 @@ import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogIntegration } from "./component/dialog-integration"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
-import { EditorContextProvider } from "./context/editor"
+import { EditorContextProvider, useEditorContext } from "./context/editor"
+import { acknowledgePromptRetry, clearPromptRetry } from "./component/prompt/retry"
+import { clearDraft } from "./component/prompt/draft-stash"
+import { isDuplicateEntry } from "./prompt/history"
 import { useEvent } from "./context/event"
 import { ClientProvider, useClient } from "./context/client"
 import { StartupLoading } from "./component/startup-loading"
@@ -492,6 +495,7 @@ function App() {
   const promptRef = usePromptRef()
   const plugins = usePlugin()
   const clipboard = useClipboard()
+  const editor = useEditorContext()
   const terminalEnvironment = useTuiTerminalEnvironment()
   let paletteTimer: ReturnType<typeof setTimeout> | undefined
   const afterFrame = () => {
@@ -1331,7 +1335,20 @@ function App() {
     )
   })
 
+  event.on("session.inbox.enqueued", (evt) => {
+    if (evt.data.item.type !== "user") return
+    const retry = acknowledgePromptRetry(evt.data.sessionID, evt.data.inboxID)
+    if (retry?.restored) {
+      const active =
+        route.data.type === "session" && route.data.sessionID === evt.data.sessionID ? promptRef.current : undefined
+      if (active && isDuplicateEntry(active.current, retry.prompt)) active.reset()
+      clearDraft(evt.data.sessionID, retry.prompt)
+    }
+    if (retry?.contextIncluded && retry.contextKey) editor.markSelectionSent(retry.contextKey)
+  })
+
   event.on("session.deleted", (evt) => {
+    clearPromptRetry(evt.data.sessionID)
     setOpenSessions((sessions) => sessions.filter((session) => session.id !== evt.data.sessionID))
     if (route.data.type === "session" && route.data.sessionID === evt.data.sessionID) {
       const title = active?.id === evt.data.sessionID ? active.title : undefined
