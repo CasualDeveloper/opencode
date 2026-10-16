@@ -4,7 +4,6 @@ import { and, asc, eq, gt } from "drizzle-orm"
 import { Effect } from "effect"
 import { Database } from "../database/database.js"
 import { Bus } from "../bus.js"
-import { Instance } from "../instance/service.js"
 import { RelativePath } from "../schema.js"
 import { Snapshot } from "../snapshot.js"
 import { SessionEvent } from "./event.js"
@@ -52,20 +51,15 @@ export const stage = Effect.fn("SessionRevert.stage")(function* (input: {
 })
 
 export const clear = Effect.fn("SessionRevert.clear")(function* (session: SessionSchema.Info) {
-  const instances = yield* Instance.Service
   const bus = yield* Bus.Service
-  yield* Effect.gen(function* () {
-    const snapshot = yield* Snapshot.Service
-    if (!session.revert) return
-    const original = session.revert.snapshot
-    if (original)
-      yield* snapshot.restore({
-        files: new Map((session.revert.files ?? []).map((file) => [RelativePath.make(file.file), original])),
-      })
-    yield* bus.publish(SessionEvent.RevertEvent.Cleared, {
-      sessionID: session.id,
+  const snapshot = yield* Snapshot.Service
+  if (!session.revert) return
+  const original = session.revert.snapshot
+  if (original)
+    yield* snapshot.restore({
+      files: new Map((session.revert.files ?? []).map((file) => [RelativePath.make(file.file), original])),
     })
-  }).pipe(instances.provide(session))
+  yield* bus.publish(SessionEvent.RevertEvent.Cleared, { sessionID: session.id })
 })
 
 export const commit = Effect.fn("SessionRevert.commit")(function* (bus: Bus.Interface, session: SessionSchema.Info) {
