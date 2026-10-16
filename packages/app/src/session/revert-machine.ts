@@ -21,6 +21,8 @@ export type KnownRevert = { readonly boundary: string | undefined }
 export type RevertEcho = string | undefined
 
 export type SessionRevertOperation =
+  | { readonly type: "undo" }
+  | { readonly type: "rewind-to"; readonly messageID: string }
   /** An undelivered prompt has no history to rewind, so it is withdrawn from the inbox instead. */
   | { readonly type: "withdraw"; readonly message: SessionMessageUser }
   | { readonly type: "rewind"; readonly message: SessionMessageUser; readonly prior: string | undefined }
@@ -70,11 +72,19 @@ export type SessionRevertEvent =
   | ({ readonly type: "undo.requested"; readonly revertMessageID: string | undefined } & RevertMessages)
   | { readonly type: "redo.requested"; readonly revertMessageID: string | undefined }
   | { readonly type: "toast.undo"; readonly attempt: number }
+  | {
+      readonly type: "operation.resolved"
+      readonly attempt: number
+      readonly prior: string | undefined
+      readonly operation: Extract<SessionRevertOperation, { type: "withdraw" | "rewind" }>
+    }
+  | { readonly type: "operation.empty"; readonly attempt: number }
   | ({ readonly type: "withdraw.succeeded"; readonly attempt: number; readonly prompt: Prompt } & RevertMessages)
   | ({
       readonly type: "rewind.succeeded"
       readonly attempt: number
       readonly draft: RevertDraftSnapshot
+      readonly prompt?: Prompt
     } & RevertMessages)
   | ({ readonly type: "redo.succeeded"; readonly attempt: number } & RevertMessages)
   | ({ readonly type: "undo-rewind.succeeded"; readonly attempt: number } & RevertMessages)
@@ -108,24 +118,12 @@ export function createSessionRevertState(): SessionRevertState {
 export function transitionSessionRevert(state: SessionRevertState, event: SessionRevertEvent): SessionRevertTransition {
   if (event.type === "rewind.to") {
     if (state.status === "running") return unchanged(state)
-    const message = event.messages.find((item) => item.id === event.messageID)
-
-    if (!message) return unchanged(state)
-
-    return start(
-      state,
-      rewindOrWithdraw(message, event.inboxIDs, effectiveRevertMessageID(state, event.revertMessageID)),
-    )
+    return start(state, { type: "rewind-to", messageID: event.messageID })
   }
 
   if (event.type === "undo.requested") {
     if (state.status === "running") return unchanged(state)
-    const boundary = effectiveRevertMessageID(state, event.revertMessageID)
-    const message = event.messages.filter((item) => !boundary || item.id < boundary).at(-1)
-
-    if (!message) return unchanged(state)
-
-    return start(state, rewindOrWithdraw(message, event.inboxIDs, boundary))
+    return start(state, { type: "undo" })
   }
 
   if (event.type === "redo.requested") {
@@ -140,6 +138,26 @@ export function transitionSessionRevert(state: SessionRevertState, event: Sessio
     return start(state, { type: "undo-rewind", prior: state.prior, draft: state.draft })
   }
 
+  if (event.type === "operation.resolved") {
+    if (
+      state.status !== "running" ||
+      state.attempt !== event.attempt ||
+      (state.operation.type !== "undo" && state.operation.type !== "rewind-to")
+    )
+      return unchanged(state)
+    return changed({
+      ...state,
+      operation: event.operation,
+      known: { boundary: event.prior },
+      echoes: [...state.echoes, ...operationEchoes(event.operation)],
+    })
+  }
+
+  if (event.type === "operation.empty") {
+    if (state.status !== "running" || state.attempt !== event.attempt) return unchanged(state)
+    return changed(idle(state.attempt, state.echoes, state.known))
+  }
+
   if (event.type === "withdraw.succeeded") {
     if (state.status !== "running" || state.attempt !== event.attempt || state.operation.type !== "withdraw")
       return unchanged(state)
@@ -147,7 +165,7 @@ export function transitionSessionRevert(state: SessionRevertState, event: Sessio
 
     return changed(idle(state.attempt, state.echoes, state.known), [
       { type: "draft.restoreMessage", message, prompt: event.prompt },
-      { type: "cursor.select", messageID: selectCursorAfterRevert(event, message.id) },
+      { type: "cursor.select", messageID: selectCursorAfterRevert(event, state.known?.boundary) },
     ])
   }
 
@@ -166,7 +184,7 @@ export function transitionSessionRevert(state: SessionRevertState, event: Sessio
         draft: event.draft,
       },
       [
-        { type: "draft.restoreMessage", message },
+        { type: "draft.restoreMessage", message, ...(event.prompt ? { prompt: event.prompt } : {}) },
         { type: "cursor.select", messageID: selectCursorAfterRevert(event, message.id) },
         { type: "toast.showRewound", attempt: state.attempt },
       ],
@@ -240,7 +258,7 @@ export function transitionSessionRevert(state: SessionRevertState, event: Sessio
   const echoes =
     event.type !== "revert.committed"
       ? state.echoes
-      : state.status === "running" && state.operation.type !== "withdraw"
+      : state.status === "running" && operationEchoes(state.operation).length > 0
         ? state.echoes.slice(-1)
         : []
 
@@ -261,14 +279,21 @@ export function effectiveRevertMessageID(state: SessionRevertState, serverRevert
 
 /** The prompt before the boundary, or the latest delivered prompt when nothing is reverted. */
 export function selectCursorAfterRevert(input: RevertMessages, boundary: string | undefined) {
-  if (boundary) return input.messages.filter((item) => item.id < boundary).at(-1)?.id
+  if (boundary) {
+    const index = input.messages.findIndex((item) => item.id === boundary)
+    return index > 0 ? input.messages[index - 1]?.id : undefined
+  }
 
   return input.messages.filter((item) => !input.inboxIDs.has(item.id)).at(-1)?.id
 }
 
 export function viewSessionRevert(
   state: SessionRevertState,
-  context: { readonly messages: readonly SessionMessageUser[]; readonly revertMessageID: string | undefined },
+  context: {
+    readonly messages: readonly SessionMessageUser[]
+    readonly revertMessageID: string | undefined
+    readonly more?: boolean
+  },
 ) {
   const busy = state.status === "running"
   const revertMessageID = effectiveRevertMessageID(state, context.revertMessageID)
@@ -276,19 +301,13 @@ export function viewSessionRevert(
   return {
     busy,
     revertMessageID,
-    canUndo: !busy && context.messages.some((item) => !revertMessageID || item.id < revertMessageID),
+    canUndo:
+      !busy &&
+      (revertMessageID
+        ? context.messages.findIndex((item) => item.id === revertMessageID) > 0 || !!context.more
+        : context.messages.length > 0),
     canRedo: !busy && !!revertMessageID,
   }
-}
-
-function rewindOrWithdraw(
-  message: SessionMessageUser,
-  inboxIDs: ReadonlySet<string>,
-  prior: string | undefined,
-): SessionRevertOperation {
-  if (inboxIDs.has(message.id)) return { type: "withdraw", message }
-
-  return { type: "rewind", message, prior }
 }
 
 // Claims the Session synchronously, so a second request before the first await is refused.
@@ -296,7 +315,7 @@ function start(state: SessionRevertState, operation: SessionRevertOperation): Se
   const attempt = state.attempt + 1
   const known = state.status === "restored" ? { boundary: state.boundary } : state.known
   // The echo is expected from the moment the request is sent: the stream can report it before the response lands.
-  const echoes = operation.type === "withdraw" ? state.echoes : [...state.echoes, echoOf(operation)]
+  const echoes = [...state.echoes, ...operationEchoes(operation)]
   const run: SessionRevertEffect = { type: "operation.run", attempt, operation }
 
   return changed(
@@ -307,18 +326,18 @@ function start(state: SessionRevertState, operation: SessionRevertOperation): Se
   )
 }
 
-function echoOf(operation: Exclude<SessionRevertOperation, { type: "withdraw" }>): RevertEcho {
-  if (operation.type === "rewind") return operation.message.id
-
-  if (operation.type === "undo-rewind") return operation.prior
-
-  return undefined
+function operationEchoes(operation: SessionRevertOperation): readonly RevertEcho[] {
+  if (operation.type === "rewind") return [operation.message.id]
+  if (operation.type === "undo-rewind") return [operation.prior]
+  if (operation.type === "redo") return [undefined]
+  return []
 }
 
 // A request that failed sends no echo.
 function withoutEcho(echoes: readonly RevertEcho[], operation: SessionRevertOperation) {
-  if (operation.type === "withdraw") return echoes
-  const index = echoes.lastIndexOf(echoOf(operation))
+  const pending = operationEchoes(operation)
+  if (!pending.length) return echoes
+  const index = echoes.lastIndexOf(pending[0])
 
   return index < 0 ? echoes : echoes.filter((_, at) => at !== index)
 }

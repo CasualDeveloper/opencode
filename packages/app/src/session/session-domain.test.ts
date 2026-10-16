@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { SessionMessageAssistant, SessionMessageInfo, SessionMessageUser } from "@opencode/client/promise"
-import { selectSessionUserMessages, selectVisibleSessionUserMessages } from "./session-domain"
+import { loadUndoTarget, selectSessionUserMessages, selectVisibleSessionUserMessages } from "./session-domain"
 
 const user = (id: string): SessionMessageUser => ({
   id,
@@ -28,4 +28,36 @@ test("selects user history strictly before the revert boundary", () => {
   expect(selectVisibleSessionUserMessages(users, "msg_b").map((message) => message.id)).toEqual(["msg_a"])
   expect(selectVisibleSessionUserMessages(users.slice(2), "msg_b")).toEqual([])
   expect(selectVisibleSessionUserMessages(users)).toBe(users)
+})
+
+test("Undo stops pagination when a cancelled page resolves without progress", async () => {
+  const controller = new AbortController()
+  let loads = 0
+  const aborted = new Error("cancelled page")
+  await expect(
+    loadUndoTarget({
+      messageID: "boundary",
+      messages: () => [user("boundary")],
+      more: () => true,
+      signal: controller.signal,
+      loadMore: async () => {
+        if (++loads > 1) throw new Error("retried cancelled pagination")
+        controller.abort(aborted)
+      },
+    }),
+  ).rejects.toBe(aborted)
+  expect(loads).toBe(1)
+})
+
+test("Undo follows transcript order through pages rather than sorting client IDs", async () => {
+  let messages = [user("msg_a")]
+  const result = await loadUndoTarget({
+    messageID: "msg_a",
+    messages: () => messages,
+    more: () => messages.length === 1,
+    loadMore: async () => {
+      messages = [user("msg_z"), user("msg_y"), ...messages]
+    },
+  })
+  expect(result).toEqual({ message: user("msg_y"), previous: user("msg_z") })
 })

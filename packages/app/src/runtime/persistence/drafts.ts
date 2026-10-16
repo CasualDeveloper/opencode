@@ -56,7 +56,7 @@ const timers = new Map<string, ReturnType<typeof setTimeout>>()
 // of large attachments costs nothing at startup.
 const storeLoaders = new Map<number, (id: string) => Promise<string | undefined>>()
 
-type MediaBlobLoader = (uri: string) => Promise<string | undefined>
+type MediaBlobLoader = (uri: string, signal?: AbortSignal) => Promise<string | undefined>
 
 const mediaLoaders = new Map<string, MediaBlobLoader>()
 
@@ -87,12 +87,14 @@ export function setMediaBlobLoader(key: string, next: MediaBlobLoader | undefine
   if (next) mediaLoaders.set(key, next)
 }
 
-async function loadMediaBlobUrl(uri: string, serverKey?: string) {
+async function loadMediaBlobUrl(uri: string, serverKey?: string, signal?: AbortSignal) {
+  signal?.throwIfAborted()
   if (serverKey) {
     const keyed = mediaLoaders.get(serverKey)
 
     if (keyed) {
-      const url = await keyed(uri).catch(() => undefined)
+      const url = await keyed(uri, signal).catch(() => undefined)
+      signal?.throwIfAborted()
 
       if (url) return url
     }
@@ -100,7 +102,8 @@ async function loadMediaBlobUrl(uri: string, serverKey?: string) {
 
   for (const [key, candidate] of [...mediaLoaders.entries()].reverse()) {
     if (key === serverKey) continue
-    const url = await candidate(uri).catch(() => undefined)
+    const url = await candidate(uri, signal).catch(() => undefined)
+    signal?.throwIfAborted()
 
     if (url) return url
   }
@@ -110,12 +113,13 @@ async function loadMediaBlobUrl(uri: string, serverKey?: string) {
 
 // The bytes behind a `media:<hash>` ref, through the authenticated media loader; `media:` is not
 // fetchable itself. Undefined once no server can serve it (swept, offline, or the flag is off).
-async function loadMediaBlob(uri: string, serverKey?: string) {
-  const url = await loadMediaBlobUrl(uri, serverKey).catch(() => undefined)
+async function loadMediaBlob(uri: string, serverKey?: string, signal?: AbortSignal) {
+  const url = await loadMediaBlobUrl(uri, serverKey, signal).catch(() => undefined)
+  signal?.throwIfAborted()
 
   if (!url) return undefined
 
-  return fetch(url).then(
+  return fetch(url, { signal }).then(
     (response) => (response.ok ? response.blob() : undefined),
     () => undefined,
   )
@@ -511,7 +515,7 @@ export function createDraftStore(driver: Driver, options: { grace?: number } = {
 function split(text: string) {
   const pieces: string[] = []
 
-  for (let start = 0; start < text.length; ) {
+  for (let start = 0; start < text.length;) {
     const end = Math.min(start + draftTextChunk, text.length)
     const code = text.charCodeAt(end - 1)
     const stop = end < text.length && code >= 0xd800 && code <= 0xdbff ? end + 1 : end
@@ -660,11 +664,13 @@ export async function blobDataUrl(blob: BlobReference, mime: string) {
  * outlive the server's copy: cancelling an inbox item sweeps blobs nothing else references. Other references return
  * unchanged; a ref nothing serves anymore throws, so the caller can stop before dropping the last server copy.
  */
-export async function pinMediaBlob(blob: BlobReference): Promise<BlobReference> {
+export async function pinMediaBlob(blob: BlobReference, signal?: AbortSignal): Promise<BlobReference> {
+  signal?.throwIfAborted()
   const ref = [blob.id, blob.url].find((uri) => mediaHashFromUri(uri))
 
   if (!ref) return blob
-  const data = await loadMediaBlob(ref)
+  const data = await loadMediaBlob(ref, undefined, signal)
+  signal?.throwIfAborted()
 
   if (!data) throw new Error(`Attachment ${ref} is no longer available`)
 
