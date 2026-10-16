@@ -16,6 +16,7 @@ const sessionID = "ses_session_queue_regression"
 const PromptBody = Schema.Struct({
   id: SessionMessage.ID.pipe(Schema.optional),
   ...PromptInput.Prompt.fields,
+  selection: PromptInput.Selection.pipe(Schema.optional),
   metadata: SessionInbox.UserPayload.fields.metadata,
   delivery: SessionInbox.Delivery.pipe(Schema.optional),
   resume: Schema.Boolean.pipe(Schema.optional),
@@ -306,9 +307,7 @@ test.describe("touch keyboard", () => {
   })
 })
 
-test("a steer shows as pending in the timeline as the composer clears, before the server admits it", async ({
-  page,
-}) => {
+test("a steer shows as pending in the timeline as the composer clears, before admission settles", async ({ page }) => {
   // The running execution has delivered input, so a new steer waits behind its work.
   const mock = createQueueMock(
     [],

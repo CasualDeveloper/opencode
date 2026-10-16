@@ -41,11 +41,13 @@ const session: ComposerSession = {
     shell: async () => undefined,
     switchAgent: async () => undefined,
     switchModel: async () => undefined,
-    revert: { commit: async () => undefined },
   },
   data: {
     location: { command: { list: () => [] } },
     session: {
+      mutate: async () => {
+        throw new Error("A pure submit transition must not perform I/O")
+      },
       prompt: async (value) => ({
         id: value.id ?? "msg_admitted",
         sessionID: value.sessionID,
