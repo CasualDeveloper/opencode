@@ -171,6 +171,11 @@ export function createNewSessionComposerAdapter(props: {
             location: data.location,
             session: {
               setStatus: data.session.setStatus,
+              mutate: (sessionID, operation) =>
+                data.session.mutate(sessionID, async (reservation) => {
+                  await afterCreation(async () => undefined)
+                  return operation(reservation)
+                }),
               prompt: (input) =>
                 data.session.prompt({
                   ...input,

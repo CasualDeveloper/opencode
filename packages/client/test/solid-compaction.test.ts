@@ -436,6 +436,118 @@ test("prepared files do not overwrite an acknowledged prompt or retract it after
   expect(fixture.data.session.pending.list(sessionID)).toMatchObject([{ id: "msg_acknowledged", payload }])
 })
 
+test("one mutation reservation holds nested admissions ahead of later prompts", async () => {
+  using fixture = setup()
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const order: string[] = []
+  const mutation = fixture.data.session.mutate(sessionID, async (reservation) => {
+    await reservation.prompt({
+      sessionID,
+      id: "msg_first",
+      text: "First",
+      prepare: async () => {
+        order.push("first")
+      },
+    })
+    entered.resolve()
+    await release.promise
+    await reservation.prompt({
+      sessionID,
+      id: "msg_second",
+      text: "Second",
+      prepare: async () => {
+        order.push("second")
+      },
+    })
+  })
+  await entered.promise
+  const later = fixture.data.session.prompt({
+    sessionID,
+    text: "Later",
+    prepare: async () => {
+      order.push("later")
+    },
+  })
+  expect(order).toEqual(["first"])
+  release.resolve()
+  await Promise.all([mutation, later])
+  expect(order).toEqual(["first", "second", "later"])
+})
+
+test("captured history accepts older pages but excludes later optimistic input across delivery", async () => {
+  using fixture = setup(async (request) => {
+    if (!new URL(request.url).pathname.endsWith("/message")) return undefined
+    const older = new URL(request.url).searchParams.has("cursor")
+    return Response.json({
+      data: [
+        {
+          id: older ? "msg_z_older" : "msg_a_original",
+          type: "user",
+          text: "History",
+          time: { created: older ? 1 : 2 },
+        },
+      ],
+      cursor: older ? {} : { next: "older" },
+    })
+  })
+  await fixture.data.session.message.sync(sessionID)
+  fixture.emit({
+    ...event,
+    type: "session.inbox.enqueued",
+    data: {
+      sessionID,
+      inboxID: "msg_notice",
+      item: { type: "synthetic", payload: { text: "Notice" }, delivery: "steer" },
+    },
+  })
+  const captured = fixture.data.session.message.capture(sessionID)
+  const later = fixture.data.session.prompt({ sessionID, id: "msg_later", text: "Later" })
+  fixture.emit({
+    ...event,
+    type: "session.inbox.enqueued",
+    data: { sessionID, inboxID: "msg_later", item: { type: "user", payload: { text: "Later" }, delivery: "queue" } },
+  })
+  fixture.emit({
+    ...event,
+    type: "session.inbox.delivered",
+    data: { sessionID, inboxID: "msg_notice", delivery: "steer" },
+  })
+  expect(captured().map((message) => message.id)).toEqual(["msg_a_original", "msg_notice"])
+  await fixture.data.session.message.loadMore(sessionID)
+  await later
+  expect(captured().map((message) => message.id)).toEqual(["msg_z_older", "msg_a_original", "msg_notice"])
+})
+
+test("cache eviction preserves a captured frontier while optimistic admissions survive", async () => {
+  const release = Promise.withResolvers<void>()
+  using fixture = setup(async (request) => {
+    if (request.url.endsWith("/prompt") && (await request.clone().json()).id === "msg_first") await release.promise
+    return undefined
+  })
+  const first = fixture.data.session.prompt({ sessionID, id: "msg_first", text: "First" })
+  const captured = fixture.data.session.message.capture(sessionID)
+  const later = fixture.data.session.prompt({ sessionID, id: "msg_later", text: "Later" })
+  try {
+    fixture.data.session.evict(sessionID)
+    fixture.emit({
+      ...event,
+      type: "session.inbox.enqueued",
+      data: { sessionID, inboxID: "msg_first", item: { type: "user", payload: { text: "First" }, delivery: "steer" } },
+    })
+    fixture.emit({
+      ...event,
+      type: "session.inbox.delivered",
+      data: { sessionID, inboxID: "msg_first", delivery: "steer" },
+    })
+    expect(fixture.data.session.message.list(sessionID).map((item) => item.id)).toEqual(["msg_later", "msg_first"])
+    expect(captured().map((item) => item.id)).toEqual(["msg_first"])
+  } finally {
+    release.resolve()
+    await Promise.all([first, later])
+  }
+})
+
 const sessionID = "ses_compact"
 const event = { id: "evt_compact", created: 10, durable: { aggregateID: sessionID, seq: 1, version: 1 } }
 const item = (id: string, timeCreated = 10): SessionInboxCompaction => ({

@@ -78,6 +78,7 @@ export type ComposerSession = {
   data: {
     location: { command: Pick<Data["location"]["command"], "list"> }
     session: {
+      mutate: Data["session"]["mutate"]
       prompt: (input: Parameters<Data["session"]["prompt"]>[0]) => ReturnType<Data["session"]["prompt"]>
       setStatus: Data["session"]["setStatus"]
     }

@@ -1,6 +1,6 @@
 import type { SessionMessageInfo } from "@opencode/client/promise"
 import { expect, test, type Page } from "@playwright/test"
-import { REMOTE_SERVER, seed, sessionHref } from "../utils/app"
+import { REMOTE_SERVER, pageMessagesFrom, seed, sessionHref } from "../utils/app"
 import { fixture, mockStressTimeline } from "../utils/session-fixture"
 import { reviewTabs } from "../utils/side-panel"
 import { expectSessionTitle } from "../utils/waits"
@@ -762,6 +762,77 @@ test.describe("revert", () => {
 
     expect((await cleared).ok()).toBe(true)
     expect(staged).toEqual([])
+  })
+
+  test("undo loads a staged boundary from an older page using transcript order", async ({ page }) => {
+    const sessionID = "ses_paginated_revert"
+    const previous = { id: "msg_fff_previous", type: "user" as const, text: "Previous prompt", time: { created: 1 } }
+    const history = [
+      previous,
+      { id: "msg_000_boundary", type: "user" as const, text: "Boundary", time: { created: 2 } },
+      ...Array.from({ length: 200 }, (_, index) => ({
+        id: `msg_after_${index}`,
+        type: "user" as const,
+        text: "Reverted prompt",
+        time: { created: index + 3 },
+      })),
+    ]
+    const staged: { sessionID: string; messageID: string }[] = []
+    const { editor } = await openSession(page, {
+      name: "PaginatedRevert",
+      sessions: [{ id: sessionID, title: "Paginated revert", revert: { messageID: "msg_000_boundary" } }],
+      pageMessages: pageMessagesFrom({ [sessionID]: history }),
+      onRevertStage: (input) => staged.push(input),
+    })
+    await editor.pressSequentially("/undo")
+    await expect(
+      page.locator('[data-component="composer-suggestions"] [data-suggestion-id][data-active]'),
+    ).toContainText("/undo")
+    await editor.press("Enter")
+    await expect(editor).toHaveText("Previous prompt")
+    expect(staged).toEqual([{ sessionID, messageID: previous.id }])
+  })
+
+  test("repeated undo uses the server boundary after an older staged echo arrives", async ({ page }) => {
+    const sessionID = "ses_undo_stale_echo"
+    const history = ["first", "second", "third"].map((text, index) => ({
+      id: `msg_${text}`,
+      type: "user" as const,
+      text,
+      time: { created: index + 1 },
+    }))
+    const staged: string[] = []
+    const fixture = await openSession(page, {
+      name: "UndoStaleEcho",
+      sessions: [{ id: sessionID, title: "Undo stale echo" }],
+      pageMessages: pageMessagesFrom({ [sessionID]: history }),
+      onRevertStage: (input) => {
+        staged.push(input.messageID)
+        Object.assign(fixture.session, { revert: { messageID: input.messageID } })
+      },
+    })
+    const undo = async (text: string) => {
+      await fixture.editor.fill("/undo")
+      await expect(
+        page.locator('[data-component="composer-suggestions"] [data-suggestion-id][data-active]'),
+      ).toContainText("/undo")
+      await fixture.editor.press("Enter")
+      await expect(fixture.editor).toHaveText(text)
+    }
+    await undo("third")
+    await undo("second")
+    await fixture.push([
+      {
+        id: "evt_old_stage",
+        created: 4,
+        type: "session.revert.staged",
+        durable: { aggregateID: sessionID, seq: 1, version: 1 },
+        data: { sessionID, revert: { messageID: "msg_third", files: [] } },
+      },
+    ])
+    await expect(page.locator('[data-message-id="msg_second"]')).toBeVisible()
+    await undo("first")
+    expect(staged).toEqual(["msg_third", "msg_second", "msg_first"])
   })
 
   test("hides revert actions in a child session", async ({ page }) => {
