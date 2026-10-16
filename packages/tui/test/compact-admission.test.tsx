@@ -160,6 +160,7 @@ test.each(["first", "second"])(
       }
       if (url.pathname === `/api/session/${sessionID}/prompt`) {
         const body = await request.json()
+        if (body.selection) session.model = body.selection.model
         mutations.push(`prompt:${body.text}:${session.model.id}`)
         if (body.text === "First prompt") {
           firstRequested.resolve()
@@ -221,12 +222,7 @@ test.each(["first", "second"])(
       expect(mutations).toHaveLength(submitted)
       first.resolve()
       expect(await secondRequested.promise).toBe("second")
-      expect(mutations.slice(-4)).toEqual([
-        "model:first",
-        "compact:first",
-        "model:second",
-        "prompt:Second prompt:second",
-      ])
+      expect(mutations.slice(-3)).toEqual(["model:first", "compact:first", "prompt:Second prompt:second"])
     } finally {
       first.resolve()
       setup.renderer.destroy()

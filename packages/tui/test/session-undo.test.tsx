@@ -37,7 +37,7 @@ test(
       expect({
         pending: [...world.pending],
         history: [...world.history],
-        afterModel: world.after("model"),
+        afterModel: world.labels(),
       }).toEqual({
         pending: [],
         history: [],
@@ -122,12 +122,10 @@ test(
       await waitUntil(
         setup,
         world,
-        () =>
-          focusedComposer(setup)?.plainText === promptText &&
-          world.labels().some((label) => label === "message.get" || label === "interrupt"),
+        () => focusedComposer(setup)?.plainText === promptText && setup.captureCharFrame().includes("Nothing to undo"),
         "composer restored after undo settled",
       )
-      expect(world.after(`prompt:${promptText}`)).toEqual(["cancel", "message.get"])
+      expect(world.labels()).toEqual([`prompt:${promptText}`, `prompt:${promptText}`])
     } finally {
       world.release()
     }
@@ -176,9 +174,144 @@ test(
   caseTimeout,
 )
 
-type WorldMode = "overtake" | "delivered" | "rejected" | "queued"
+type WorldMode = "overtake" | "delivered" | "rejected" | "queued" | "paginated"
+
+test("undo loads older history before selecting the predecessor of an unloaded revert", async () => {
+  const world = createWorld("paginated", "ses_undo_paginated")
+  await using setup = await createAppFixture({ args: { sessionID: world.sessionID }, fetch: world.fetch })
+  await setup.ready
+  await setup.waitForFrame((frame) => frame.includes("Demo Model"))
+  await setup.mockInput.typeText("/undo")
+  setup.mockInput.pressEnter()
+  await waitUntil(
+    setup,
+    world,
+    () => focusedComposer(setup)?.plainText === "Previous prompt",
+    "paginated undo restoration",
+  )
+  expect(world.labels()).toEqual(["interrupt", "wait", "revert.stage:msg_z_previous"])
+})
+
+test("failed prompt retries retain identity and a late echo clears only the restored draft", async () => {
+  const world = createWorld("rejected", "ses_retry_echo")
+  await using setup = await createAppFixture({ args: { sessionID: world.sessionID }, fetch: world.fetch })
+  world.releaseModel()
+  await setup.ready
+  await setup.waitForFrame((frame) => frame.includes("Demo Model"))
+  await setup.mockInput.typeText(promptText)
+  setup.mockInput.pressEnter()
+  await setup.waitFor(() => world.ids.length === 2 && focusedComposer(setup)?.plainText === promptText)
+  setup.mockInput.pressEnter()
+  await setup.waitFor(() => world.ids.length === 4 && focusedComposer(setup)?.plainText === promptText)
+  expect(new Set(world.ids).size).toBe(1)
+  expect(world.labels()).not.toContain("model")
+  setup.events.emit({
+    id: "evt_retry_echo",
+    created: 2,
+    type: "session.inbox.enqueued",
+    durable: { aggregateID: world.sessionID, seq: 1, version: 1 },
+    data: {
+      sessionID: world.sessionID,
+      inboxID: world.ids[0],
+      item: { type: "user", payload: { text: promptText }, delivery: "steer" },
+    },
+  })
+  await setup.waitFor(() => focusedComposer(setup)?.plainText === "")
+})
+
+test("restoring a rejected normal prompt resets a subsequently selected empty shell mode", async () => {
+  const world = createWorld("rejected", "ses_restore_mode")
+  await using setup = await createAppFixture({ args: { sessionID: world.sessionID }, fetch: world.fetch })
+  try {
+    await setup.ready
+    await setup.waitForFrame((frame) => frame.includes("Demo Model"))
+    await setup.mockInput.typeText(promptText)
+    setup.mockInput.pressEnter()
+    await world.modelRequested.promise
+    await setup.mockInput.typeText("!")
+    world.releaseModel()
+    await waitUntil(
+      setup,
+      world,
+      () => world.ids.length === 2 && focusedComposer(setup)?.plainText === promptText,
+      "failed normal prompt",
+    )
+    setup.mockInput.pressEnter()
+    await waitUntil(setup, world, () => world.ids.length === 4 || world.labels().includes("shell"), "resubmission")
+    expect(world.labels()).not.toContain("shell")
+    expect(world.ids).toHaveLength(4)
+  } finally {
+    world.release()
+  }
+})
+
+test("a prompt waiting behind admission keeps its captured editor context when selection changes", async () => {
+  const connected = Promise.withResolvers<void>()
+  let select = (_file: string, _text: string) => {}
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request)) return
+      return new Response(null, { status: 400 })
+    },
+    websocket: {
+      message() {},
+      open(socket) {
+        select = (file, text) => {
+          socket.send(
+            JSON.stringify({
+              method: "selection_changed",
+              params: {
+                filePath: `${directory}/${file}`,
+                ranges: [
+                  { text, selection: { start: { line: 0, character: 0 }, end: { line: 0, character: text.length } } },
+                ],
+                source: "websocket",
+              },
+            }),
+          )
+        }
+        connected.resolve()
+      },
+    },
+  })
+  const previous = process.env.OPENCODE_EDITOR_SSE_PORT
+  process.env.OPENCODE_EDITOR_SSE_PORT = String(server.port)
+  const world = createWorld("overtake", "ses_context_capture")
+  try {
+    await using setup = await createAppFixture({ args: { sessionID: world.sessionID }, fetch: world.fetch })
+    try {
+      await setup.ready
+      await setup.waitForFrame((frame) => frame.includes("Demo Model"))
+      await connected.promise
+      await setup.mockInput.typeText("First")
+      setup.mockInput.pressEnter()
+      await world.modelRequested.promise
+      select("first.ts", "CAPTURED_ALPHA")
+      await setup.waitForFrame((frame) => frame.includes("first.ts"))
+      await setup.mockInput.typeText("Explain context")
+      setup.mockInput.pressEnter()
+      await setup.waitFor(() => focusedComposer(setup)?.plainText === "")
+      select("second.ts", "LATER_BETA")
+      await setup.waitForFrame((frame) => frame.includes("second.ts"))
+      world.releaseModel()
+      await waitUntil(setup, world, () => world.ids.length === 2, "second context request")
+      expect(world.contexts[1]).toContain("CAPTURED_ALPHA")
+      expect(world.contexts[1]).not.toContain("LATER_BETA")
+    } finally {
+      world.release()
+    }
+  } finally {
+    world.release()
+    if (previous === undefined) delete process.env.OPENCODE_EDITOR_SSE_PORT
+    else process.env.OPENCODE_EDITOR_SSE_PORT = previous
+    await server.stop(true)
+  }
+})
 
 function createWorld(mode: WorldMode, sessionID: string) {
+  const ids: string[] = []
+  const contexts: Array<string | undefined> = []
   const pending = new Set<string>()
   const history = new Set<string>()
   const texts = new Map<string, string>()
@@ -197,6 +330,7 @@ function createWorld(mode: WorldMode, sessionID: string) {
     id: sessionID,
     projectID: "project",
     title: "Undo fixture",
+    revert: mode === "paginated" ? { messageID: "msg_boundary" } : undefined,
     agent: "build",
     model: { providerID: "demo", id: "model" },
     location: { directory },
@@ -218,6 +352,8 @@ function createWorld(mode: WorldMode, sessionID: string) {
     pending,
     history,
     modelRequested,
+    ids,
+    contexts,
     promptPosted,
     releaseModel: () => modelHeld.resolve(),
     releaseStage: () => stageHeld.resolve(),
@@ -235,7 +371,17 @@ function createWorld(mode: WorldMode, sessionID: string) {
     fetch: async (url: URL, request: Request) => {
       if (url.pathname === `/api/session/${sessionID}` && request.method === "GET") return json({ data: session })
       if (url.pathname === `/api/session/${sessionID}/message` && request.method === "GET")
-        return json({ data: [], cursor: {} })
+        return mode === "paginated"
+          ? json({
+              data: url.searchParams.has("cursor")
+                ? [
+                    { id: "msg_boundary", type: "user", text: "Boundary", time: { created: 2 } },
+                    { id: "msg_z_previous", type: "user", text: "Previous prompt", time: { created: 1 } },
+                  ]
+                : [{ id: "msg_a_later", type: "user", text: "Later", time: { created: 3 } }],
+              cursor: url.searchParams.has("cursor") ? {} : { next: "older" },
+            })
+          : json({ data: [], cursor: {} })
       if (url.pathname === `/api/session/${sessionID}/permission`) return json({ data: [] })
       if (url.pathname === `/api/session/${sessionID}/inbox` && request.method === "GET")
         return json({ data: mode === "queued" ? [queued] : [] })
@@ -251,10 +397,14 @@ function createWorld(mode: WorldMode, sessionID: string) {
         return new Response(null, { status: 204 })
       }
       if (url.pathname === `/api/session/${sessionID}/prompt` && request.method === "POST") {
-        const body = (await request.json()) as { id?: string; text?: string }
+        const body = (await request.json()) as { id?: string; text?: string; context?: { text: string } }
         const id = body.id ?? ""
+        ids.push(id)
+        contexts.push(body.context?.text)
         const text = body.text ?? ""
         requests.push({ method: "POST", label: `prompt:${text}` })
+        modelRequested.resolve()
+        if (mode === "overtake" || mode === "rejected") await modelHeld.promise
         if (mode === "rejected")
           return json({ _tag: "InvalidRequestError", message: "Skill not found", field: "skills" }, { status: 400 })
         texts.set(id, text)
@@ -273,6 +423,10 @@ function createWorld(mode: WorldMode, sessionID: string) {
         })
       }
       const inboxID = url.pathname.match(new RegExp(`^/api/session/${sessionID}/inbox/([^/]+)$`))?.[1]
+      if (url.pathname.endsWith("/shell") && request.method === "POST") {
+        requests.push({ method: "POST", label: "shell" })
+        return new Response(null, { status: 204 })
+      }
       if (inboxID && request.method === "DELETE") {
         requests.push({ method: "DELETE", label: "cancel" })
         pending.delete(decodeURIComponent(inboxID))
