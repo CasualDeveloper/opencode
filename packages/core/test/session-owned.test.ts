@@ -74,6 +74,8 @@ const skillInfo = Skill.Info.make({
 const setup = Effect.fnUntraced(function* (options?: {
   execution?: SessionExecution.Interface
   realExecution?: boolean
+  read?: (sessionID: SessionSchema.ID) => Effect.Effect<void>
+  awaitActivation?: Effect.Effect<void>
   shell?: Layer.Layer<Shell.Service>
   skills?: (ref: Location.Ref) => Layer.Layer<Skill.Service>
   snapshot?: (ref: Location.Ref) => Layer.Layer<Snapshot.Service>
@@ -153,7 +155,7 @@ const setup = Effect.fnUntraced(function* (options?: {
       Layer.mock(Plugin.Service, {
         awaitActivation: Effect.sync(() => {
           activationWaits.push(ref)
-        }),
+        }).pipe(Effect.andThen(options?.awaitActivation ?? Effect.void)),
       }),
     ).pipe(Layer.fresh)
   }
@@ -192,6 +194,13 @@ const setup = Effect.fnUntraced(function* (options?: {
     >(),
     Effect.provideService(Instance.Service, instances),
     Effect.provideService(SessionExecution.Service, execution),
+    Effect.provideService(
+      SessionStore.Service,
+      SessionStore.Service.of({
+        ...store,
+        get: (sessionID) => store.get(sessionID).pipe(Effect.tap(() => options?.read?.(sessionID) ?? Effect.void)),
+      }),
+    ),
   )
   return {
     sessions,
@@ -317,58 +326,263 @@ describe("Session-owned handles", () => {
     }),
   )
 
-  for (const state of ["pending", "delivered", "conflicting"] as const) {
-    it.live(`reconciles a delayed ${state} identity before committing a staged revert`, () =>
-      Effect.gen(function* () {
-        const fixture = yield* setup({
-          snapshot: () => Layer.mock(Snapshot.Service, { capture: () => Effect.undefined }),
-        })
-        const handle = fixture.sessions.forSession(sessionID)
-        const boundary = yield* handle.synthetic({ text: "Boundary", resume: false })
-        yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
-        const preparing = yield* Deferred.make<void>()
-        const release = yield* Deferred.make<void>()
-        yield* fixture.hooks.register("session", "prompt", (event) =>
-          event.prompt.text === "Delayed"
-            ? Deferred.succeed(preparing, undefined).pipe(Effect.andThen(Deferred.await(release)))
-            : Effect.void,
-        )
-        const id = SessionMessage.ID.create()
+  it.live("closing a sequential owner scope interrupts a waiting successor before its blocked predecessor", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      const fixture = yield* setup().pipe(Effect.provideService(Scope.Scope, scope))
+      const handle = fixture.sessions.forSession(sessionID)
+      const firstReady = yield* Deferred.make<void>()
+      const secondReady = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* fixture.hooks.register("session", "prompt", (event) =>
+        event.prompt.text === "First"
+          ? Deferred.succeed(firstReady, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Deferred.succeed(secondReady, undefined).pipe(Effect.asVoid),
+      )
+      const first = yield* handle.prompt({ text: "First", resume: false }).pipe(Effect.forkIn(scope))
+      yield* Deferred.await(firstReady)
+      const second = yield* handle.prompt({ text: "Second", resume: false }).pipe(Effect.forkIn(scope))
+      yield* Deferred.await(secondReady)
+      yield* Effect.yieldNow
+      const closing = yield* Scope.close(scope, Exit.void).pipe(Effect.forkChild)
+      const settled = yield* Fiber.await(closing).pipe(Effect.timeout("1 second"), Effect.exit)
+      const released = yield* Deferred.isDone(release)
+      // Release only after probing close, so even a regressed cleanup can finish the test.
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(closing)
+      expect(Exit.isSuccess(settled)).toBe(true)
+      expect(released).toBe(false)
+      const firstExit = yield* Fiber.await(first)
+      const secondExit = yield* Fiber.await(second)
+      expect(Exit.isFailure(firstExit) && Cause.hasInterruptsOnly(firstExit.cause)).toBe(true)
+      expect(Exit.isFailure(secondExit) && Cause.hasInterruptsOnly(secondExit.cause)).toBe(true)
+      expect(yield* handle.inbox()).toEqual([])
+    }),
+  )
 
+  it.live("reconciles a retry after an earlier clear without preparing discarded input", () =>
+    Effect.gen(function* () {
+      const clearing = yield* Deferred.make<void>()
+      const read = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      let hold = false
+      let observe = false
+      let hooks = 0
+      const fixture = yield* setup({
+        snapshot: () => Layer.mock(Snapshot.Service, { capture: () => Effect.undefined }),
+        awaitActivation: Effect.suspend(() =>
+          hold ? Deferred.succeed(clearing, undefined).pipe(Effect.andThen(Deferred.await(release))) : Effect.void,
+        ),
+        read: () => (observe ? Deferred.succeed(read, undefined).pipe(Effect.asVoid) : Effect.void),
+      })
+      const handle = fixture.sessions.forSession(sessionID)
+      const boundary = yield* handle.prompt({ text: "Winner", resume: false })
+      yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
+      yield* handle.revert.stage({ messageID: boundary.id, files: false })
+      yield* fixture.hooks.register("session", "prompt", () =>
+        Effect.sync(() => {
+          hooks++
+        }),
+      )
+      hold = true
+      try {
+        const clear = yield* handle.revert.clear().pipe(Effect.forkChild)
+        yield* Deferred.await(clearing)
+        observe = true
+        const retry = yield* handle
+          .prompt({
+            id: boundary.id,
+            text: "Ignored",
+            files: [{ uri: "data:image/png;base64,not-base64" }],
+            resume: false,
+          })
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(read)
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(clear)
+        const admitted = yield* Fiber.join(retry)
+        expect(admitted.payload).toEqual(boundary.payload)
+        expect(hooks).toBe(0)
+        expect((yield* handle.get()).revert).toBeUndefined()
+      } finally {
+        yield* Deferred.succeed(release, undefined)
+      }
+    }),
+  )
+
+  it.live("reserves prompt admission before a later revert stage", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({
+        snapshot: () => Layer.mock(Snapshot.Service, { capture: () => Effect.undefined }),
+      })
+      const handle = fixture.sessions.forSession(sessionID)
+      const boundary = yield* handle.synthetic({ text: "Boundary", resume: false })
+      yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
+      const preparing = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* fixture.hooks.register("session", "prompt", () =>
+        Deferred.succeed(preparing, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      )
+      try {
+        const prompt = yield* handle.prompt({ text: "Prepared first", resume: false }).pipe(Effect.forkChild)
+        yield* Deferred.await(preparing)
+        const stage = yield* handle.revert.stage({ messageID: boundary.id, files: false }).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(release, undefined)
+        const admitted = yield* Fiber.join(prompt)
+        yield* Fiber.join(stage)
+        expect((yield* handle.get()).revert?.messageID).toBe(boundary.id)
+        expect((yield* handle.inbox()).map((item) => item.id)).toContain(admitted.id)
+      } finally {
+        yield* Deferred.succeed(release, undefined)
+      }
+    }),
+  )
+
+  for (const middle of ["failed", "interrupted"] as const) {
+    it.live(`keeps later admission behind a ${middle} middle preparation`, () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup()
+        const handle = fixture.sessions.forSession(sessionID)
+        const firstReady = yield* Deferred.make<void>()
+        const middleReady = yield* Deferred.make<void>()
+        const lastReady = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        yield* fixture.hooks.register("session", "prompt", (event) => {
+          if (event.prompt.text === "First")
+            return Deferred.succeed(firstReady, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          if (event.prompt.text === "Last") return Deferred.succeed(lastReady, undefined).pipe(Effect.asVoid)
+          return Deferred.succeed(middleReady, undefined).pipe(
+            Effect.andThen(middle === "failed" ? Effect.die(new Error("Middle failed")) : Effect.never),
+          )
+        })
         try {
-          const delayed = yield* handle.prompt({ id, text: "Delayed", resume: false }).pipe(Effect.forkChild)
-          yield* Deferred.await(preparing)
-          const winner = yield* fixture.sessions
-            .forSession(state === "conflicting" ? otherID : sessionID)
-            .prompt({ id, text: "Winner", resume: false })
-          if (state === "delivered") yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
-          yield* handle.revert.stage({ messageID: boundary.id, files: false })
+          const first = yield* handle.prompt({ text: "First", resume: false }).pipe(Effect.forkChild)
+          yield* Deferred.await(firstReady)
+          const stopped = yield* handle.prompt({ text: "Middle", resume: false }).pipe(Effect.forkChild)
+          yield* Deferred.await(middleReady)
+          if (middle === "interrupted") yield* Fiber.interrupt(stopped)
+          expect(Exit.isFailure(yield* Fiber.await(stopped))).toBe(true)
+          const last = yield* handle.prompt({ text: "Last", resume: false }).pipe(Effect.forkChild)
+          yield* Deferred.await(lastReady)
+          yield* Effect.yieldNow
           yield* Deferred.succeed(release, undefined)
-          const result = yield* Fiber.await(delayed)
-          if (state === "conflicting") {
-            expect(Exit.isFailure(result) && Cause.squash(result.cause)).toBeInstanceOf(PromptConflictError)
-          }
-          if (state !== "conflicting") {
-            expect(Exit.isSuccess(result) && result.value.payload).toEqual(winner.payload)
-          }
-          expect((yield* handle.get()).revert?.messageID).toBe(boundary.id)
-          if (state === "delivered") {
-            expect((yield* fixture.store.context(sessionID)).find((message) => message.id === id)).toMatchObject({
-              text: "Winner",
-            })
-          }
-          if (state !== "delivered") {
-            expect(yield* SessionInbox.find(fixture.db, id)).toMatchObject({
-              type: "user",
-              payload: { text: "Winner" },
-            })
-          }
+          yield* Fiber.join(first)
+          yield* Fiber.join(last)
+          expect(
+            (yield* handle.inbox()).map((item) => ("text" in item.payload ? item.payload.text : undefined)),
+          ).toEqual(["First", "Last"])
         } finally {
           yield* Deferred.succeed(release, undefined)
         }
       }),
     )
   }
+
+  for (const state of ["pending", "delivered"] as const) {
+    it.live(`preserves a retained ${state} admission when its retry commits a staged boundary`, () =>
+      Effect.gen(function* () {
+        const fixture = yield* setup({
+          snapshot: () => Layer.mock(Snapshot.Service, { capture: () => Effect.undefined }),
+        })
+        const handle = fixture.sessions.forSession(sessionID)
+        const winner = yield* handle.prompt({
+          text: "Winner",
+          delivery: state === "pending" ? "queue" : "steer",
+          resume: false,
+        })
+        if (state === "delivered") yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
+        const boundary = yield* handle.synthetic({ text: "Boundary", resume: false })
+        yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
+        yield* handle.revert.stage({ messageID: boundary.id, files: false })
+        const retried = yield* handle.prompt({ id: winner.id, text: "Ignored", resume: false })
+        expect(retried.payload).toEqual(winner.payload)
+        expect((yield* handle.get()).revert).toBeUndefined()
+        if (state === "delivered") {
+          expect((yield* fixture.store.context(sessionID)).find((message) => message.id === winner.id)).toMatchObject({
+            text: "Winner",
+          })
+        }
+        if (state === "pending") {
+          expect(yield* SessionInbox.find(fixture.db, winner.id)).toMatchObject({
+            type: "user",
+            payload: { text: "Winner" },
+          })
+        }
+      }),
+    )
+  }
+
+  it.live("keeps a staged boundary when another Session wins the replacement ID during preparation", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({
+        snapshot: () => Layer.mock(Snapshot.Service, { capture: () => Effect.undefined }),
+      })
+      const handle = fixture.sessions.forSession(sessionID)
+      const boundary = yield* handle.synthetic({ text: "Boundary", resume: false })
+      yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
+      yield* handle.revert.stage({ messageID: boundary.id, files: false })
+      const preparing = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* fixture.hooks.register("session", "prompt", (event) =>
+        event.prompt.text === "Delayed"
+          ? Deferred.succeed(preparing, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      )
+      const id = SessionMessage.ID.create()
+
+      try {
+        const delayed = yield* handle.prompt({ id, text: "Delayed", resume: false }).pipe(Effect.forkChild)
+        yield* Deferred.await(preparing)
+        yield* fixture.sessions.forSession(otherID).prompt({ id, text: "Winner", resume: false })
+        yield* Deferred.succeed(release, undefined)
+        const result = yield* Fiber.await(delayed)
+        expect(Exit.isFailure(result) && Cause.squash(result.cause)).toBeInstanceOf(PromptConflictError)
+        expect((yield* handle.get()).revert?.messageID).toBe(boundary.id)
+        expect((yield* fixture.store.context(sessionID)).some((message) => message.id === boundary.id)).toBe(true)
+        expect(yield* SessionInbox.find(fixture.db, id)).toMatchObject({ type: "user", payload: { text: "Winner" } })
+      } finally {
+        yield* Deferred.succeed(release, undefined)
+      }
+    }),
+  )
+
+  it.live("allows a replacement to reuse the user ID removed at the staged boundary", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({
+        snapshot: () => Layer.mock(Snapshot.Service, { capture: () => Effect.undefined }),
+      })
+      const handle = fixture.sessions.forSession(sessionID)
+      const boundary = yield* handle.prompt({ text: "Boundary", resume: false })
+      yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
+      yield* handle.revert.stage({ messageID: boundary.id, files: false })
+      const replacement = yield* handle.prompt({ id: boundary.id, text: "Replacement", resume: false })
+      expect(replacement.id).toBe(boundary.id)
+      expect(replacement.payload.text).toBe("Replacement")
+      expect((yield* handle.get()).revert).toBeUndefined()
+      expect(yield* fixture.store.context(sessionID)).toEqual([])
+      expect(yield* handle.inbox()).toEqual([replacement])
+    }),
+  )
+
+  it.live("rolls back a staged replacement whose metadata cannot persist", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup({
+        snapshot: () => Layer.mock(Snapshot.Service, { capture: () => Effect.undefined }),
+      })
+      const handle = fixture.sessions.forSession(sessionID)
+      const boundary = yield* handle.synthetic({ text: "Boundary", resume: false })
+      yield* SessionInbox.promote(fixture.db, fixture.bus, sessionID, "steer")
+      yield* handle.revert.stage({ messageID: boundary.id, files: false })
+      const result = yield* handle
+        .prompt({ text: "Replacement", metadata: { value: 1n }, resume: false })
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(result)).toBe(true)
+      expect((yield* handle.get()).revert?.messageID).toBe(boundary.id)
+      expect((yield* fixture.store.context(sessionID)).map((message) => message.id)).toEqual([boundary.id])
+      expect(yield* handle.inbox()).toEqual([])
+    }),
+  )
 
   it.live("keeps the first admission across handles, including delivered retries and identity conflicts", () =>
     Effect.gen(function* () {
@@ -831,7 +1045,7 @@ describe("Session-owned handles", () => {
 
       expect(captures).toEqual([source, destination])
       expect(fixture.locations).toEqual([source, destination, destination])
-      expect(fixture.activationWaits).toEqual([])
+      expect(fixture.activationWaits).toEqual([source, destination, destination])
       expect((yield* handle.get()).revert).toBeUndefined()
     }),
   )
@@ -967,10 +1181,10 @@ describe("SessionRevert operations", () => {
 
       const staged = yield* handle.get()
       expect(staged.revert?.snapshot).toBe(Snapshot.ID.make("captured-tree"))
-      yield* SessionRevert.clear(staged).pipe(Effect.provideService(Instance.Service, fixture.instances))
+      yield* SessionRevert.clear(staged).pipe(fixture.instances.provide(staged))
       const cleared = yield* handle.get()
       expect(cleared.revert).toBeUndefined()
-      yield* SessionRevert.clear(cleared).pipe(Effect.provideService(Instance.Service, fixture.instances))
+      yield* SessionRevert.clear(cleared).pipe(fixture.instances.provide(cleared))
       expect(calls).toEqual(["capture", "capture", "diff", "restore"])
     }),
   )
