@@ -184,6 +184,18 @@ function session(input: {
     data: {
       location: { command: { list: () => [] } },
       session: {
+        mutate: async (_sessionID, operation) =>
+          operation({
+            prompt: async () => {
+              throw new Error("Unexpected nested prompt")
+            },
+            undo: async () => {
+              throw new Error("Unexpected undo")
+            },
+            withdraw: async () => {
+              throw new Error("Unexpected withdrawal")
+            },
+          }),
         setStatus: (_sessionID, status) => input.statuses?.push(status),
         acceptSend: () => {
           input.calls.push("accept-send")

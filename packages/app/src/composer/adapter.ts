@@ -90,6 +90,7 @@ export type ComposerSession = {
   data: {
     location: { command: Pick<Data["location"]["command"], "list"> }
     session: {
+      mutate: Data["session"]["mutate"]
       prompt: (input: Parameters<Data["session"]["prompt"]>[0]) => ReturnType<Data["session"]["prompt"]>
       // Runs a request in the session's send chain, after the sends made before it have settled.
       sequence: Data["session"]["sequence"]
