@@ -1,9 +1,11 @@
 import { Tool } from "@opencode/schema/tool"
 import type { Rpc } from "@opencode/schema/rpc"
 import type { RpcCallOptions, RpcEventPayload } from "@opencode/client/promise/api"
-import { Effect, Schema, SchemaAST, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Schema, SchemaAST, Stream } from "effect"
 import type { Scope } from "effect"
 import { HttpApiEndpoint, HttpApiSchema } from "effect/http-api"
+import { AsyncLocalStorage } from "node:async_hooks"
+import { PluginActivation } from "../effect/activation.js"
 import { define } from "../effect/plugin.js"
 import type { ToolFailures, ToolHooks } from "../effect/tool.js"
 import { AssertInput } from "../permission.js"
@@ -242,6 +244,15 @@ export function fromPromise(plugin: Plugin) {
         const WorktreeEndpoints = ClientApi.groups["server.worktree"].endpoints
         const runtime = yield* Effect.context<Scope.Scope>()
         const streams = yield* makeStreams()
+        const activation = Context.get(runtime, PluginActivation.Current)
+        const setupCalls = new Set<Promise<unknown>>()
+        const promptHook = new AsyncLocalStorage<{
+          readonly preparation: PluginActivation.PromptPreparation
+          readonly calls: Set<Promise<unknown>>
+          readonly controller: AbortController
+          accepting: boolean
+        }>()
+        let setupActive = true
 
         // Run a hook registration on the plugin scope and resolve once it is registered.
         const register = (effect: Effect.Effect<HostRegistration, never, Scope.Scope>): Promise<Registration> =>
@@ -262,22 +273,67 @@ export function fromPromise(plugin: Plugin) {
               { signal: context.signal },
             )
 
+        // Promise setup runs host calls in new root fibers. Bridge only synthetic
+        // admissions, then drain them before the activation capability expires.
+        const runSetup = <A, E>(effect: Effect.Effect<A, E>) => {
+          const request = run(
+            setupActive && activation?.active
+              ? effect.pipe(Effect.provideService(PluginActivation.Bridged, activation.token))
+              : effect,
+          )
+          if (setupActive && activation?.active) {
+            setupCalls.add(request)
+            void request.then(
+              () => setupCalls.delete(request),
+              () => setupCalls.delete(request),
+            )
+          }
+          return request
+        }
+
+        const runSynthetic = <A, E>(effect: Effect.Effect<A, E>, input: unknown) => {
+          if (setupActive && activation?.active) return runSetup(effect)
+          const sessionID =
+            typeof input === "object" && input !== null && "sessionID" in input && typeof input.sessionID === "string"
+              ? input.sessionID
+              : undefined
+          const invocation = promptHook.getStore()
+          const preparation = invocation?.preparation
+          if (!invocation?.accepting || !preparation?.active || preparation.sessionID !== sessionID) return run(effect)
+          const request = Effect.runPromiseWith(runtime)(
+            effect.pipe(Effect.provideService(PluginActivation.PromptPreparationBridged, preparation.token)),
+            { signal: invocation.controller.signal },
+          )
+          invocation.calls.add(request)
+          void request.then(
+            () => invocation.calls.delete(request),
+            () => invocation.calls.delete(request),
+          )
+          return request
+        }
+
         const adaptApiMethod = <PromiseMethod>(
           endpoint: HttpApiEndpoint.Top,
           method: (input: never) => Effect.Effect<unknown, unknown>,
+          runner: (effect: Effect.Effect<unknown, unknown>, input: unknown) => Promise<unknown> = run,
         ) => {
           const compiled = compileEndpoint(endpoint)
-          return ((input?: unknown) =>
-            Effect.gen(function* () {
-              // Match the generated Promise client, whose request body crosses JSON before endpoint decoding.
-              const normalized = yield* Schema.encodeUnknownEffect(JsonInput)(input ?? {}).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(JsonInput)),
-              )
-              const decoded = yield* Effect.forEach(compiled.decode, (decode) => decode(normalized))
-              const result = yield* method(Object.assign({}, ...decoded) as never)
-              if (compiled.noContent) return undefined
-              return yield* compiled.encode(result)
-            }).pipe(Effect.runPromiseWith(runtime))) as PromiseMethod
+          return ((input?: unknown) => {
+            const value = input ?? {}
+            return runner(
+              Effect.gen(function* () {
+                // Match the generated Promise client, whose request body crosses JSON before endpoint decoding.
+                const normalized = yield* Schema.encodeUnknownEffect(JsonInput)(value).pipe(
+                  Effect.flatMap(Schema.decodeUnknownEffect(JsonInput)),
+                )
+                const decoded = yield* Effect.forEach(compiled.decode, (decode) => decode(normalized))
+                const result = yield* method(Object.assign({}, ...decoded) as never)
+                if (compiled.noContent) return undefined
+                return yield* compiled.encode(result)
+              }),
+              value,
+            )
+          }) as PromiseMethod
         }
 
         const transform =
@@ -591,7 +647,41 @@ export function fromPromise(plugin: Plugin) {
           session: {
             hook: (name, callback, options) =>
               register(
-                host.session.hook(name, (event) => Effect.promise(() => Promise.resolve(callback(event))), options),
+                host.session.hook(
+                  name,
+                  (event) =>
+                    Effect.gen(function* () {
+                      const preparation = yield* PluginActivation.PromptPreparationCurrent
+                      if (!preparation?.active || preparation.sessionID !== event.sessionID)
+                        return yield* Effect.promise(() => Promise.resolve(callback(event)))
+                      return yield* Effect.acquireUseRelease(
+                        Effect.sync(() => ({
+                          preparation,
+                          calls: new Set<Promise<unknown>>(),
+                          controller: new AbortController(),
+                          accepting: true,
+                        })),
+                        (invocation) =>
+                          Effect.promise(() =>
+                            promptHook.run(invocation, () => Promise.resolve().then(() => callback(event))),
+                          ),
+                        (invocation, exit) =>
+                          Effect.gen(function* () {
+                            invocation.accepting = false
+                            const drain = Effect.promise(() => Promise.allSettled(invocation.calls))
+                            const cancel = Effect.sync(() => invocation.controller.abort()).pipe(Effect.andThen(drain))
+                            if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)) return yield* cancel
+                            // A normal drain can itself be interrupted by shutdown. Cancel coordination
+                            // waits, then settle protected mutations before preparation expires.
+                            return yield* drain.pipe(
+                              Effect.interruptible,
+                              Effect.onInterrupt(() => cancel),
+                            )
+                          }),
+                      )
+                    }),
+                  options,
+                ),
               ),
             list: adaptApiMethod(SessionEndpoints["session.list"], host.session.list),
             create: adaptApiMethod(SessionEndpoints["session.create"], host.session.create),
@@ -603,7 +693,7 @@ export function fromPromise(plugin: Plugin) {
             generate: adaptApiMethod(SessionEndpoints["session.generate"], host.session.generate),
             command: adaptApiMethod(SessionEndpoints["session.command"], host.session.command),
             compact: adaptApiMethod(SessionEndpoints["session.compact"], host.session.compact),
-            synthetic: adaptApiMethod(SessionEndpoints["session.synthetic"], host.session.synthetic),
+            synthetic: adaptApiMethod(SessionEndpoints["session.synthetic"], host.session.synthetic, runSynthetic),
             interrupt: adaptApiMethod(SessionEndpoints["session.interrupt"], host.session.interrupt),
             update: adaptApiMethod(SessionEndpoints["session.update"], host.session.update),
             move: adaptApiMethod(SessionEndpoints["session.move"], host.session.move),
@@ -617,7 +707,18 @@ export function fromPromise(plugin: Plugin) {
         }
 
         yield* Effect.acquireRelease(
-          Effect.promise(() => Promise.resolve(plugin.setup(context2))),
+          Effect.promise(async () => {
+            const result = await Promise.resolve()
+              .then(() => plugin.setup(context2))
+              .then(
+                (cleanup) => ({ _tag: "success" as const, cleanup }),
+                (cause) => ({ _tag: "failure" as const, cause }),
+              )
+            while (setupCalls.size) await Promise.allSettled(setupCalls)
+            setupActive = false
+            if (result._tag === "failure") throw result.cause
+            return result.cleanup
+          }),
           (cleanup) => (cleanup ? Effect.promise(() => Promise.resolve(cleanup())) : Effect.void),
         )
       }),

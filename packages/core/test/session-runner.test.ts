@@ -5216,7 +5216,7 @@ describe("SessionRunnerLLM", () => {
     expect(messageRoles(s.requests[0])).toEqual(["user", "assistant", "tool"])
   })
 
-  scenario("a replacement prepared during real staging commits the staged boundary", function* (s) {
+  scenario("a replacement starting during real staging commits the published boundary", function* (s) {
     const boundary = yield* s.admit("Before replacement")
     yield* s.llm.push(TestLLM.text("Before answer", "before-replacement"))
     yield* s.resume
@@ -5231,10 +5231,12 @@ describe("SessionRunnerLLM", () => {
       const stage = yield* s.session.revert.stage({ sessionID, messageID: boundary.id }).pipe(Effect.forkChild)
       yield* Deferred.await(capturing)
       const replacement = yield* s.admit("Replacement").pipe(Effect.forkChild)
-      yield* Deferred.await(prepared)
       yield* Effect.yieldNow
+      // The initial boundary read waits for staging; do not wait on its prompt hook while holding capture.
+      expect(yield* Deferred.isDone(prepared)).toBe(false)
       yield* Deferred.succeed(release, undefined)
       yield* Fiber.join(stage)
+      yield* Deferred.await(prepared)
       const admitted = yield* Fiber.join(replacement)
       expect((yield* s.session.get(sessionID)).revert).toBeUndefined()
       expect((yield* s.session.inbox(sessionID)).map((item) => item.id)).toContain(admitted.id)
