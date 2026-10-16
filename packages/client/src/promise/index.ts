@@ -2,6 +2,7 @@ import type { OpenCode } from "./client.js"
 
 export * from "./generated/index.js"
 export { OpenCode } from "./client.js"
+export { SessionInput } from "./session-input.js"
 export type {
   AgentApi,
   CommandApi,

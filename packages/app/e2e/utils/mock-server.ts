@@ -11,6 +11,7 @@ import {
   MockBadRequest,
   MockInternal,
   MockNotFound,
+  MockMessageNotFound,
   MockPtyNotFound,
   MockShellNotFound,
   MockUnauthorized,
@@ -37,9 +38,7 @@ export type MockSession = { id: string } & Record<string, unknown>
 export type MockMcpStatus = { status: string; error?: string }
 
 export type MockFileContent =
-  | string
-  | { type?: string; content: string; encoding?: string; mimeType?: string }
-  | undefined
+  string | { type?: string; content: string; encoding?: string; mimeType?: string } | undefined
 
 export interface MockServerConfig {
   server?: string
@@ -1375,7 +1374,12 @@ function mockHandlers(
                 .pageMessages(ctx.params.sessionID, Number.MAX_SAFE_INTEGER)
                 .items.find((item) => item.id === ctx.params.messageID)
 
-            if (!message) return yield* new MockNotFound({ message: "Message not found" })
+            if (!message)
+              return yield* new MockMessageNotFound({
+                sessionID: ctx.params.sessionID,
+                messageID: ctx.params.messageID,
+                message: "Message not found",
+              })
 
             return { data: message }
           }),

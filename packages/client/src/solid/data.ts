@@ -45,7 +45,7 @@ import { SessionMessage } from "@opencode/schema/session-message"
 import {
   isFormAlreadySettledError,
   isFormNotFoundError,
-  isMessageNotFoundError,
+  SessionInput,
   isPermissionNotFoundError,
   type SessionPromptInput,
 } from "../promise"
@@ -140,6 +140,11 @@ export function locationKey(location: LocationRef) {
 
 function locationQuery(ref: LocationRef) {
   return { directory: ref.directory }
+}
+
+type PromptAdmissionInput = SessionPromptInput & {
+  gate?: Promise<unknown>
+  prepare?: () => Promise<Pick<SessionPromptInput, "files"> | void>
 }
 
 function optimisticFiles(files: SessionPromptInput["files"]) {
@@ -353,6 +358,9 @@ export function createData(config: CreateDataInput) {
   // echo, positive pending read, or rollback; compactions also reconcile the
   // POST's canonical ID.
   const outbox = new Set<string>()
+  // Keep generations through acknowledgement and cache eviction: queued captures can outlive both.
+  const localAdmissions = new Map<string, Map<string, number>>()
+  let admissionSequence = 0
 
   // Session IDs of optimistic create admissions still awaiting acknowledgement
   // (the session.created echo or the create response itself). A failed create
@@ -385,32 +393,88 @@ export function createData(config: CreateDataInput) {
   }
 
   // Capture creation before settlement clears its entry, so dependent RPCs still see a failed create.
-  function sendInOrder<Value>(sessionID: string, send: () => Promise<Value>, gate?: Promise<unknown>) {
+  function sendInOrder<Value>(
+    sessionID: string,
+    send: () => Promise<Value>,
+    gate?: Promise<unknown>,
+    serialized = true,
+  ) {
     const created = creating.get(sessionID)
-    const previous = sending.get(sessionID)
+    const previous = serialized ? sending.get(sessionID) : undefined
     const request = Promise.resolve()
       .then(() => Promise.all([gate, created, previous]))
       .then(send)
-    track(
-      sending,
-      sessionID,
-      request.catch(() => undefined),
-    )
+    if (serialized)
+      track(
+        sending,
+        sessionID,
+        request.catch(() => undefined),
+      )
     return request
   }
 
   // Cancellation is idempotent, so only the projected message shows whether delivery won.
   async function withdrawInput(sessionID: string, inboxID: string) {
-    await api().session.inbox.cancel({ sessionID, inboxID })
-    return api()
-      .session.message.get({ sessionID, messageID: inboxID })
-      .then(
-        () => "delivered" as const,
-        (error: unknown) => {
-          if (isMessageNotFoundError(error)) return "withdrawn" as const
-          throw error
-        },
-      )
+    return SessionInput.withdraw(api().session, { sessionID, inboxID })
+  }
+
+  async function undoInput(sessionID: string, messageID: string) {
+    const delivered =
+      !result.session.input.has(sessionID, messageID) && result.session.message.get(sessionID, messageID) !== undefined
+    if (!delivered && (await withdrawInput(sessionID, messageID)) === "withdrawn") return
+    await api().session.interrupt({ sessionID })
+    await api().session.wait({ sessionID })
+    const revert = await api().session.revert.stage({ sessionID, messageID })
+    const current = store.session.info[sessionID]
+    if (current) result.session.remember({ ...current, revert })
+  }
+
+  function admitPrompt(input: PromptAdmissionInput, serialized: boolean) {
+    const { gate, prepare, ...request } = input
+    const id = request.id ?? SessionMessage.ID.create()
+    const fresh =
+      !messageIndex.get(request.sessionID)?.has(id) &&
+      !store.session.pending[request.sessionID]?.some((item) => item.id === id)
+    if (fresh) {
+      const admissions = localAdmissions.get(request.sessionID) ?? new Map<string, number>()
+      admissions.set(id, ++admissionSequence)
+      localAdmissions.set(request.sessionID, admissions)
+      const files = optimisticFiles(request.files)
+      const payload: Extract<SessionInboxInfo, { type: "user" }>["payload"] = {
+        text: request.text,
+        agents: request.agents?.map((agent) => ({ ...agent })),
+        metadata: request.metadata,
+      }
+      if (files) payload.files = files
+      outbox.add(id)
+      admitLocal({
+        id,
+        sessionID: request.sessionID,
+        time: { created: Date.now() },
+        type: "user",
+        delivery: request.delivery ?? "steer",
+        payload,
+      })
+    }
+    return sendInOrder(
+      request.sessionID,
+      async () => {
+        const prepared = await prepare?.()
+        if (prepared?.files && fresh && outbox.has(id)) {
+          const pending = store.session.pending[request.sessionID]?.find((item) => item.id === id)
+          if (pending?.type === "user")
+            admitLocal({ ...pending, payload: { ...pending.payload, files: optimisticFiles(prepared.files) } })
+        }
+        const send = () => api().session.prompt({ ...request, ...prepared, id })
+        // Keep ambiguous admission retries ahead of the next mutation.
+        return send().catch(send)
+      },
+      gate,
+      serialized,
+    ).catch((error) => {
+      if (fresh && outbox.delete(id)) retractLocal(request.sessionID, id)
+      throw error
+    })
   }
 
   // Upsert an admitted inbox item into pending and (for user and synthetic
@@ -617,6 +681,7 @@ export function createData(config: CreateDataInput) {
   }
 
   function removeSession(sessionID: string) {
+    localAdmissions.delete(sessionID)
     activeUpdates?.set(sessionID, undefined)
     store.session.pending[sessionID]?.forEach((item) => outbox.delete(item.id))
     messageIndex.delete(sessionID)
@@ -1665,75 +1730,38 @@ export function createData(config: CreateDataInput) {
       // upsert that same ID with the server's payload. Server admission is
       // idempotent per ID, so retrying with the identical payload cannot
       // double-admit.
-      prompt(
-        input: SessionPromptInput & {
-          gate?: Promise<unknown>
-          prepare?: () => Promise<Pick<SessionPromptInput, "files"> | void>
-        },
+      prompt(input: PromptAdmissionInput) {
+        return admitPrompt(input, true)
+      },
+      mutate<Value>(
+        sessionID: string,
+        operation: (reservation: {
+          prompt: (input: PromptAdmissionInput) => ReturnType<typeof admitPrompt>
+          undo: (messageID: string) => Promise<void>
+          withdraw: (inboxID: string) => ReturnType<typeof withdrawInput>
+        }) => Promise<Value>,
       ) {
-        const { gate, prepare, ...request } = input
-        const id = request.id ?? SessionMessage.ID.create()
-        // A retry may reuse an ID that is already rendered — and possibly
-        // already durable. Admit optimistically only for new IDs so a failed
-        // retry cannot roll back acknowledged state.
-        const fresh =
-          !messageIndex.get(request.sessionID)?.has(id) &&
-          !store.session.pending[request.sessionID]?.some((item) => item.id === id)
-        if (fresh) {
-          const files = optimisticFiles(request.files)
-          const payload: Extract<SessionInboxInfo, { type: "user" }>["payload"] = {
-            text: request.text,
-            agents: request.agents?.map((agent) => ({ ...agent })),
-            metadata: request.metadata,
-          }
-          if (files) payload.files = files
-          outbox.add(id)
-          admitLocal({
-            id,
-            sessionID: request.sessionID,
-            time: { created: Date.now() },
-            type: "user",
-            delivery: request.delivery ?? "steer",
-            // File-URI attachments and skills stay off the optimistic row: their durable
-            // forms are server-loaded (content, mime, resolution), so they
-            // fill in when the echo upserts the row. Inline data URLs already carry
-            // their mime and base64 payload, so they render immediately.
-            payload,
+        return sendInOrder(sessionID, () =>
+          operation({
+            prompt: (input) => admitPrompt({ ...input, sessionID }, false),
+            undo: (messageID) => undoInput(sessionID, messageID),
+            withdraw: (inboxID) => withdrawInput(sessionID, inboxID),
+          }),
+        )
+      },
+      revert: {
+        clear(input: { sessionID: string }) {
+          return sendInOrder(input.sessionID, async () => {
+            await api().session.revert.clear(input)
+            const current = store.session.info[input.sessionID]
+            if (current) result.session.remember({ ...current, revert: undefined })
           })
-        }
-        return sendInOrder(
-          request.sessionID,
-          async () => {
-            const prepared = await prepare?.()
-            if (prepared?.files && fresh && outbox.has(id)) {
-              const pending = store.session.pending[request.sessionID]?.find((item) => item.id === id)
-              if (pending?.type === "user")
-                admitLocal({ ...pending, payload: { ...pending.payload, files: optimisticFiles(prepared.files) } })
-            }
-            const send = () => api().session.prompt({ ...request, files: prepared?.files ?? request.files, id })
-            // Retry the same admission before releasing its place in the send chain.
-            return send().catch(send)
-          },
-          gate,
-        ).catch((error) => {
-          // Roll back only rows this call admitted and the server has not
-          // acknowledged: anything else is server state.
-          if (fresh && outbox.delete(id)) retractLocal(request.sessionID, id)
-          throw error
-        })
+        },
       },
       // A loaded message that is no longer pending has left the inbox, so only a pending or unloaded one
       // needs the server to decide.
       undo(input: { sessionID: string; messageID: string }) {
-        return sendInOrder(input.sessionID, async () => {
-          const delivered =
-            !result.session.input.has(input.sessionID, input.messageID) &&
-            result.session.message.get(input.sessionID, input.messageID) !== undefined
-          if (!delivered && (await withdrawInput(input.sessionID, input.messageID)) === "withdrawn") return
-          await api().session.interrupt({ sessionID: input.sessionID })
-          await api().session.wait({ sessionID: input.sessionID })
-          await api().session.revert.stage({ sessionID: input.sessionID, messageID: input.messageID })
-        })
+        return sendInOrder(input.sessionID, () => undoInput(input.sessionID, input.messageID))
       },
       sync(sessionID: string, options?: { children?: boolean }) {
         return sync.run(options?.children ? `session.family:${sessionID}` : `session:${sessionID}`, async () => {
@@ -1761,6 +1789,18 @@ export function createData(config: CreateDataInput) {
         sync.invalidate(`session:${sessionID}`)
       },
       message: {
+        // Retain the captured frontier while allowing older history to load into it.
+        capture(sessionID: string) {
+          const cutoff = admissionSequence
+          const observed = new Set((store.session.message[sessionID] ?? []).map((message) => message.id))
+          return () => {
+            const messages = store.session.message[sessionID] ?? []
+            const boundary = messages.findLastIndex((message) => observed.has(message.id)) + 1
+            return messages
+              .slice(0, boundary)
+              .filter((message) => (localAdmissions.get(sessionID)?.get(message.id) ?? 0) <= cutoff)
+          }
+        },
         list(sessionID: string) {
           return store.session.message[sessionID] ?? []
         },

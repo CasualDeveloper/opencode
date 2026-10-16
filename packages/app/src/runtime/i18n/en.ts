@@ -545,6 +545,7 @@ export const dict = {
   "session.queue.remove": "Remove",
   "session.queue.undo": "Undo",
   "session.queue.undoShell": "Leave shell mode before undoing a queued prompt",
+  "session.queue.delivered": "Prompt was already sent. Use Undo to take it back",
   "session.queue.reorder": "Reorder queued prompt",
   "session.queue.reverted": "Redo the revert before you reorder or edit queued prompts",
   "session.queue.attachments.one": "{{count}} attachment",
