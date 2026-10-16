@@ -81,11 +81,6 @@ export type ComposerSession = {
     switchModel: (
       input: Parameters<ServerSDK["api"]["session"]["switchModel"]>[0],
     ) => ReturnType<ServerSDK["api"]["session"]["switchModel"]>
-    revert: {
-      commit: (
-        input: Parameters<ServerSDK["api"]["session"]["revert"]["commit"]>[0],
-      ) => ReturnType<ServerSDK["api"]["session"]["revert"]["commit"]>
-    }
   }
   file: {
     list: (
