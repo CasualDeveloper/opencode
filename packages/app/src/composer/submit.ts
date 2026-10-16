@@ -339,12 +339,11 @@ async function runClientCommand(input: ComposerSubmitInput, prompt: Prompt, run:
   // following the same steer rule as server commands.
   const selection = currentSelection(input)
 
-  if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer")
-    await applySelection(
-      input.adapter.session(),
-      selection,
-      input.adapter.controls().model.selection.trackSessionCommit,
-    )
+  if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer") {
+    const session = input.adapter.session()
+    const track = input.adapter.controls().model.selection.trackSessionCommit
+    await session.data.session.mutate(session.id, () => applySelection(session, selection, track))
+  }
   clearClientCommand(input, prompt)
   await run()
 }
@@ -702,29 +701,31 @@ async function sendShell(session: ComposerSession, value: ComposerSubmission) {
   await session.api.shell({ sessionID: session.id, id: value.id, command: value.text })
 }
 
-async function sendCommand(
+function sendCommand(
   session: ComposerSession,
   value: ComposerSubmission,
   command: { command: string; arguments: string },
   track?: ModelSelection["trackSessionCommit"],
 ) {
-  const request = await buildSubmissionRequest(session, value)
+  return session.data.session.mutate(session.id, async () => {
+    const request = await buildSubmissionRequest(session, value)
 
-  // Like queued prompts, queued commands must not apply the composer's selection to active work.
-  if (value.delivery === "steer") await applySelection(session, value.selection, track)
-  await session.api.command({
-    sessionID: session.id,
-    name: command.command,
-    text: command.arguments,
-    files: request.files.map((file) => ({
-      uri: file.uri,
-      name: file.name,
-      description: file.description,
-      mention: file.mention,
-    })),
-    agents: request.agents,
-    skills: request.skills,
-    delivery: value.delivery,
+    // Like queued prompts, queued commands must not apply the composer's selection to active work.
+    if (value.delivery === "steer") await applySelection(session, value.selection, track)
+    await session.api.command({
+      sessionID: session.id,
+      name: command.command,
+      text: command.arguments,
+      files: request.files.map((file) => ({
+        uri: file.uri,
+        name: file.name,
+        description: file.description,
+        mention: file.mention,
+      })),
+      agents: request.agents,
+      skills: request.skills,
+      delivery: value.delivery,
+    })
   })
 }
 

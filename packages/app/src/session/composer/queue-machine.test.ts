@@ -342,6 +342,10 @@ describe("stale results", () => {
       transitionQueue(disposed.state, { type: "mutation.undone", attempt, prompt: prompt("inb_1 text"), context: [] })
         .effects,
     ).toEqual([{ type: "draft.merge", prompt: prompt("inb_1 text"), context: [], focus: false }])
+    expect(transitionQueue(disposed.state, { type: "mutation.delivered", attempt })).toEqual({
+      state: { status: "disposed" },
+      effects: [],
+    })
   })
 })
 
@@ -467,6 +471,18 @@ test("a staged revert refuses edits and reorders", () => {
     expect(result.state).toBe(state)
     expect(result.effects).toEqual([{ type: "toast", key: "session.queue.reverted" }])
   }
+})
+
+test("a delivery that wins withdrawal settles Undo without restoring a duplicate draft", () => {
+  const started = transitionQueue(createQueueState([one, two]), { type: "undo.requested", id: one.id, mode: "normal" })
+  const attempt = runs(started.effects)[0].attempt
+  const stale = transitionQueue(started.state, { type: "mutation.delivered", attempt: attempt - 1 })
+  expect(stale.state).toBe(started.state)
+  const done = transitionQueue(started.state, { type: "mutation.delivered", attempt })
+  expect(done.state.status).toBe("idle")
+  expect(rowIDs(done.state)).toEqual([two.id])
+  expect(done.effects).toContainEqual({ type: "toast", key: "session.queue.delivered" })
+  expect(done.effects.some((effect) => effect.type === "draft.merge")).toBe(false)
 })
 
 test("undo waits for an idle queue and refuses shell mode", () => {

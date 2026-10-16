@@ -47,9 +47,7 @@ export type EditOperation = {
 }
 
 export type QueuedOperation =
-  | EditOperation
-  | { readonly type: "steer"; readonly id: string }
-  | { readonly type: "remove"; readonly id: string }
+  EditOperation | { readonly type: "steer"; readonly id: string } | { readonly type: "remove"; readonly id: string }
 
 // Operations that leave the composer free, so a row can be edited while one runs. `cancelling` means the server
 // admitted every replacement, so a later failure must not hand the edit back to the composer.
@@ -146,6 +144,7 @@ export type QueueEvent =
   | { readonly type: "mutation.moved"; readonly attempt: number; readonly moved: Readonly<Record<string, string>> }
   | { readonly type: "mutation.admitted"; readonly attempt: number }
   | { readonly type: "mutation.succeeded"; readonly attempt: number }
+  | { readonly type: "mutation.delivered"; readonly attempt: number }
   | {
       readonly type: "mutation.undone"
       readonly attempt: number
@@ -164,7 +163,8 @@ export type QueueEvent =
   | { readonly type: "gone.expired"; readonly expiry: number }
   | { readonly type: "dispose" }
 
-export type QueueToastKey = "common.requestFailed" | "session.queue.reverted" | "session.queue.undoShell"
+export type QueueToastKey =
+  "common.requestFailed" | "session.queue.reverted" | "session.queue.undoShell" | "session.queue.delivered"
 
 export type QueueEffect =
   | { readonly type: "draft.load"; readonly prompt: Prompt; readonly cursor: number }
@@ -274,7 +274,8 @@ function settleDisposed(state: Extract<QueueState, { status: "disposed" }>, even
 
   if (!returning || !("attempt" in event) || event.attempt !== returning.attempt) return unchanged(state)
 
-  if (event.type === "mutation.admitted" || event.type === "mutation.succeeded") return changed({ status: "disposed" })
+  if (event.type === "mutation.admitted" || event.type === "mutation.succeeded" || event.type === "mutation.delivered")
+    return changed({ status: "disposed" })
 
   if (event.type === "mutation.undone")
     return changed({ status: "disposed" }, [
@@ -560,7 +561,15 @@ function settle(
   state: LiveQueueState,
   event: Extract<
     QueueEvent,
-    { type: "mutation.moved" | "mutation.admitted" | "mutation.succeeded" | "mutation.undone" | "mutation.failed" }
+    {
+      type:
+        | "mutation.moved"
+        | "mutation.admitted"
+        | "mutation.succeeded"
+        | "mutation.delivered"
+        | "mutation.undone"
+        | "mutation.failed"
+    }
   >,
 ): QueueTransition {
   // A result for an operation that is no longer in flight is stale, for example one that settles after unmount.
@@ -593,7 +602,8 @@ function settle(
     ])
   }
 
-  if (event.type === "mutation.succeeded") {
+  if (event.type === "mutation.succeeded" || event.type === "mutation.delivered") {
+    if (event.type === "mutation.delivered" && active.type !== "undo") return unchanged(state)
     const confirmed =
       active.type === "steer" || active.type === "remove"
         ? [active.id]
@@ -609,7 +619,13 @@ function settle(
       moved,
     )
 
-    return changed(next.state, [...hidden.effects, ...next.effects])
+    return changed(next.state, [
+      ...(event.type === "mutation.delivered"
+        ? [{ type: "toast" as const, key: "session.queue.delivered" as const }]
+        : []),
+      ...hidden.effects,
+      ...next.effects,
+    ])
   }
 
   const hidden = hide(state, event.hidden)
@@ -661,15 +677,14 @@ function hide(state: Mutating, ids: readonly string[]): MutatingTransition {
 function advance(state: Mutating, moved: Readonly<Record<string, string>>): QueueTransition {
   const remap = (id: string) => moved[id] ?? id
 
-  const [head, ...rest] = state.pending.map(
-    (operation): QueuedOperation =>
-      operation.type === "edit"
-        ? {
-            ...operation,
-            original: remap(operation.original),
-            moved: Object.fromEntries(Object.entries(operation.moved).map(([id, next]) => [remap(id), next])),
-          }
-        : { ...operation, id: remap(operation.id) },
+  const [head, ...rest] = state.pending.map((operation): QueuedOperation =>
+    operation.type === "edit"
+      ? {
+          ...operation,
+          original: remap(operation.original),
+          moved: Object.fromEntries(Object.entries(operation.moved).map(([id, next]) => [remap(id), next])),
+        }
+      : { ...operation, id: remap(operation.id) },
   )
 
   const base = { seq: state.seq, items: state.items, gone: state.gone, moved: state.moved }
@@ -854,24 +869,20 @@ export function queuedPromptAttachments(item: QueuedPrompt): (ImageAttachmentPar
   const inline = files.filter((file) => isComposerAttachment(file))
 
   return [
-    ...inline.map(
-      (file, index): ImageAttachmentPart => ({
-        type: "image",
-        id: `${item.id}:file:${index}`,
-        filename: file.name ?? "attachment",
-        mime: file.mime,
-        blob: createLegacyBlobReference("uri" in file ? file.uri : `data:${file.mime};base64,${file.data}`),
-      }),
-    ),
-    ...(readPromptPresentation(item.payload.metadata)?.attachments ?? []).map(
-      (file, index): PathAttachmentPart => ({
-        type: "path",
-        id: `${item.id}:path:${index}`,
-        filename: file.name,
-        mime: file.mime,
-        path: file.path,
-      }),
-    ),
+    ...inline.map((file, index): ImageAttachmentPart => ({
+      type: "image",
+      id: `${item.id}:file:${index}`,
+      filename: file.name ?? "attachment",
+      mime: file.mime,
+      blob: createLegacyBlobReference("uri" in file ? file.uri : `data:${file.mime};base64,${file.data}`),
+    })),
+    ...(readPromptPresentation(item.payload.metadata)?.attachments ?? []).map((file, index): PathAttachmentPart => ({
+      type: "path",
+      id: `${item.id}:path:${index}`,
+      filename: file.name,
+      mime: file.mime,
+      path: file.path,
+    })),
   ]
 }
 
