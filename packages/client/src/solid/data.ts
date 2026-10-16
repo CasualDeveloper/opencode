@@ -1720,7 +1720,12 @@ export function createData(config: CreateDataInput) {
       // upsert that same ID with the server's payload. Server admission is
       // idempotent per ID, so retrying with the identical payload cannot
       // double-admit.
-      prompt(input: SessionPromptInput & { gate?: Promise<unknown>; prepare?: () => Promise<unknown> }) {
+      prompt(
+        input: SessionPromptInput & {
+          gate?: Promise<unknown>
+          prepare?: () => Promise<Pick<SessionPromptInput, "files"> | void>
+        },
+      ) {
         const { gate, prepare, ...request } = input
         const id = request.id ?? SessionMessage.ID.create()
         // A retry may reuse an ID that is already rendered — and possibly
@@ -1754,8 +1759,15 @@ export function createData(config: CreateDataInput) {
         return sendAdmission(
           request.sessionID,
           async () => {
-            await prepare?.()
-            return api().session.prompt({ ...request, id })
+            const prepared = await prepare?.()
+            if (prepared?.files && fresh && outbox.has(id)) {
+              const pending = store.session.pending[request.sessionID]?.find((item) => item.id === id)
+              if (pending?.type === "user")
+                admitLocal({ ...pending, payload: { ...pending.payload, files: optimisticFiles(prepared.files) } })
+            }
+            const send = () => api().session.prompt({ ...request, files: prepared?.files ?? request.files, id })
+            // Retry the same admission before releasing its place in the send chain.
+            return send().catch(send)
           },
           gate,
         ).catch((error) => {

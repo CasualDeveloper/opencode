@@ -166,7 +166,6 @@ export function createNewSessionComposerAdapter(props: {
             shell: (input) => afterCreation(() => serverSDK.api.session.shell(input)),
             switchAgent: (input) => afterCreation(() => serverSDK.api.session.switchAgent(input)),
             switchModel: (input) => afterCreation(() => serverSDK.api.session.switchModel(input)),
-            revert: { commit: (input) => afterCreation(() => serverSDK.api.session.revert.commit(input)) },
           },
           data: {
             location: data.location,

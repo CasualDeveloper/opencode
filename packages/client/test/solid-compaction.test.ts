@@ -328,6 +328,114 @@ test("creation failure rejects gated prompt, compaction, and following preparati
   gate.resolve()
 })
 
+test.each(["success", "failure"])(
+  "keeps prepared prompt retry ahead of the next admission after %s",
+  async (outcome) => {
+    const ready = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const retry = Promise.withResolvers<void>()
+    const releaseRetry = Promise.withResolvers<void>()
+    const requests: { id: string; files?: { uri: string }[] }[] = []
+    const prepared: string[] = []
+    using fixture = setup(async (request) => {
+      if (!request.url.endsWith("/prompt")) return undefined
+      const body = await request.json()
+      requests.push(body)
+      if (body.id === "msg_first") {
+        if (requests.length === 1) return new Response("Lost response", { status: 500 })
+        retry.resolve()
+        await releaseRetry.promise
+        if (outcome === "failure") return new Response("Still unavailable", { status: 500 })
+      }
+      return Response.json({ data: { ...item(body.id), type: "user", payload: { text: body.text } } })
+    })
+    const files = [{ uri: "data:image/png;base64,YQ==", name: "prepared.png" }]
+    const first = fixture.data.session
+      .prompt({
+        sessionID,
+        id: "msg_first",
+        text: "First",
+        prepare: async () => {
+          prepared.push("first")
+          ready.resolve()
+          await release.promise
+          return { files }
+        },
+      })
+      .then(
+        () => "success",
+        () => "failure",
+      )
+    await ready.promise
+    const second = fixture.data.session.prompt({
+      sessionID,
+      id: "msg_second",
+      text: "Second",
+      prepare: async () => {
+        prepared.push("second")
+      },
+    })
+    expect(requests).toEqual([])
+    expect(fixture.data.session.pending.list(sessionID).map((item) => item.id)).toEqual(["msg_first", "msg_second"])
+    release.resolve()
+    await Promise.race([retry.promise, first])
+    expect(prepared).toEqual(["first"])
+    expect(requests.map((request) => request.id)).toEqual(["msg_first", "msg_first"])
+    expect(requests.map((request) => request.files)).toEqual([files, files])
+    const preview = [{ data: "YQ==", mime: "image/png", name: "prepared.png", source: { type: "inline" } }]
+    expect(fixture.data.session.pending.list(sessionID)[0]).toMatchObject({ payload: { files: preview } })
+    expect(fixture.data.session.message.get(sessionID, "msg_first")).toMatchObject({ files: preview })
+    releaseRetry.resolve()
+    expect(await first).toBe(outcome)
+    await second
+    expect(requests.map((request) => request.id)).toEqual(["msg_first", "msg_first", "msg_second"])
+    expect(prepared).toEqual(["first", "second"])
+    expect(fixture.data.session.pending.list(sessionID).map((item) => item.id)).toEqual(
+      outcome === "success" ? ["msg_first", "msg_second"] : ["msg_second"],
+    )
+  },
+)
+
+test("prepared files do not overwrite an acknowledged prompt or retract it after lost responses", async () => {
+  const preparing = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const sending = Promise.withResolvers<void>()
+  const response = Promise.withResolvers<Response>()
+  using fixture = setup(async (request) => {
+    if (!request.url.endsWith("/prompt")) return undefined
+    sending.resolve()
+    return (await response.promise).clone()
+  })
+  const prompt = fixture.data.session
+    .prompt({
+      sessionID,
+      id: "msg_acknowledged",
+      text: "draft",
+      prepare: async () => {
+        preparing.resolve()
+        await release.promise
+        return { files: [{ uri: "data:image/png;base64,YQ==" }] }
+      },
+    })
+    .catch((error: unknown) => error)
+  await preparing.promise
+  const payload = {
+    text: "canonical",
+    files: [{ data: "Yg==", mime: "image/png", source: { type: "inline" as const } }],
+  }
+  fixture.emit({
+    ...event,
+    type: "session.inbox.enqueued",
+    data: { sessionID, inboxID: "msg_acknowledged", item: { type: "user", delivery: "steer", payload } },
+  })
+  release.resolve()
+  await sending.promise
+  expect(fixture.data.session.message.get(sessionID, "msg_acknowledged")).toMatchObject(payload)
+  response.resolve(new Response("Lost response", { status: 500 }))
+  expect(await prompt).toBeInstanceOf(Error)
+  expect(fixture.data.session.pending.list(sessionID)).toMatchObject([{ id: "msg_acknowledged", payload }])
+})
+
 const sessionID = "ses_compact"
 const event = { id: "evt_compact", created: 10, durable: { aggregateID: sessionID, seq: 1, version: 1 } }
 const item = (id: string, timeCreated = 10): SessionInboxCompaction => ({
