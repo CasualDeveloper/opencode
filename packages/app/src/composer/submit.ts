@@ -115,24 +115,26 @@ export function createComposerSubmit(input: ComposerSubmitInput) {
     }
 
     if (submitting.has(input.adapter.state)) return
-
-    // Images restored from a draft or history carry ids only; the optimistic message shows their URLs.
-    const value = {
-      ...read,
-      images: await Promise.all(
-        read.images.map(async (image) => ({
-          ...image,
-          blob: { ...image.blob, url: (await resolveBlobUrl(image.blob)) ?? image.blob.url },
-        })),
-      ),
-    }
-
     submitting.add(input.adapter.state)
     const comments = input.comments.capture()
     // Capture command intent before starting a session in a worktree whose catalog has not loaded.
-    const command = value.mode === "normal" ? findCommand(input.commands(), value.text) : undefined
+    const command = read.mode === "normal" ? findCommand(input.commands(), read.text) : undefined
 
     try {
+      // Existing-session attachments prepare inside the send chain. New sessions need
+      // their image URLs for the handoff preview before creation.
+      const value =
+        input.adapter.kind === "new-session" && read.images.length
+          ? {
+              ...read,
+              images: await Promise.all(
+                read.images.map(async (image) => ({
+                  ...image,
+                  blob: { ...image.blob, url: (await resolveBlobUrl(image.blob)) ?? image.blob.url },
+                })),
+              ),
+            }
+          : read
       const started =
         input.adapter.kind === "active-session"
           ? { session: input.adapter.session(), cleanupReady: Promise.resolve() }
@@ -466,7 +468,6 @@ async function applySelection(
   session: ComposerSession,
   selection: ComposerSelection,
   track?: ModelSelection["trackSessionCommit"],
-  beforeModel?: () => Promise<void>,
 ) {
   const cancel = track?.(session.id, selection)
 
@@ -476,8 +477,6 @@ async function applySelection(
     if (current?.agent !== selection.agent) {
       await session.api.switchAgent({ sessionID: session.id, agent: selection.agent })
     }
-
-    await beforeModel?.()
 
     // The server deduplicates unchanged selections; cached SSE state may still be behind an earlier switch.
     await session.api.switchModel({
@@ -490,46 +489,48 @@ async function applySelection(
   }
 }
 
-async function sendPrompt(
+function sendPrompt(
   session: ComposerSession,
   value: ComposerSubmission,
   track: ModelSelection["trackSessionCommit"] | undefined,
 ) {
-  const request = await buildSubmissionRequest(session, value)
-
-  // Switching agent or model reconfigures the session immediately, and with it
-  // the remainder of a running turn. A steer targets that turn, so its
-  // selection applies now; a queued follow-up must not reconfigure the turn it
-  // waits behind, so it runs with the session selection at delivery time (the
-  // intended selection stays recorded in its metadata).
-  // Like the TUI, a staged revert settles after the agent switch and before the model switch and admission. The
-  // server would otherwise commit it on admission and delete every row from its boundary on, the model switch too.
-  const settle = async () => {
-    if (session.current()?.revert) await session.api.revert.commit({ sessionID: session.id })
-  }
-
-  const commit = () => (value.delivery === "steer" ? applySelection(session, value.selection, track, settle) : settle())
-  // The data layer admits the prompt locally before it commits the selection, so a steer shows as pending while the
-  // selection commits. A staged revert settles before admission instead: its committed echo removes every local row
-  // from its boundary on. Only an idle session stages one, and a prompt into it starts work rather than showing as
-  // pending.
-  const staged = !!session.current()?.revert
-
-  if (staged) await commit()
-  // A retried admission reuses the first commit rather than switching again.
-  let committed: Promise<void> | undefined
-
-  const admission = {
+  const request = buildPromptRequest({
+    prompt: value.prompt,
+    context: value.context,
+    images: [],
+    text: value.text,
+    sessionDirectory: session.directory,
+  })
+  // Reserve admission before attachment reads; selection and revert commit belong to the server's batch.
+  let cancel: (() => void) | undefined
+  const sending = session.data.session.prompt({
     id: value.id,
     sessionID: session.id,
     delivery: value.delivery,
+    selection:
+      value.delivery === "steer"
+        ? {
+            agent: value.selection.agent,
+            model: {
+              id: value.selection.model.modelID,
+              providerID: value.selection.model.providerID,
+              variant: value.selection.variant,
+            },
+          }
+        : undefined,
     text: request.text,
-    files: request.files.map((file) => ({
-      uri: file.uri,
-      name: file.name,
-      description: file.description,
-      mention: file.mention,
-    })),
+    prepare: async () => {
+      const prepared = await buildSubmissionRequest(session, value)
+      if (value.delivery === "steer") cancel = track?.(session.id, value.selection)
+      return {
+        files: prepared.files.map((file) => ({
+          uri: file.uri,
+          name: file.name,
+          description: file.description,
+          mention: file.mention,
+        })),
+      }
+    },
     agents: request.agents,
     skills: request.skills,
     metadata: {
@@ -539,10 +540,17 @@ async function sendPrompt(
       agent: value.selection.agent,
       model: selectionModel(value.selection),
     },
-    prepare: staged ? undefined : () => (committed ??= commit()),
-  }
-
-  await session.data.session.prompt(admission).catch(() => session.data.session.prompt(admission))
+  })
+  return sending.then(
+    (admitted) => {
+      if (admitted.delivery === "queue") cancel?.()
+      return admitted
+    },
+    (error) => {
+      if (!session.admitted(value.id)) cancel?.()
+      throw error
+    },
+  )
 }
 
 async function buildSubmissionRequest(session: ComposerSession, value: ComposerSubmission) {
