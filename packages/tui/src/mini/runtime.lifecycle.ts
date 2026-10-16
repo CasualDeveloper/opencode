@@ -77,7 +77,7 @@ export type LifecycleInput = {
   onModelSelect?: (model: NonNullable<RunInput["model"]>) => CycleResult | void | Promise<CycleResult | void>
   onVariantSelect?: (variant: string | undefined) => CycleResult | void | Promise<CycleResult | void>
   onInterrupt?: () => void
-  onQueuedPromptAction?: (action: QueuedPromptAction, inboxID: string) => Promise<void>
+  onQueuedPromptAction?: (action: QueuedPromptAction, inboxID: string) => Promise<void | "withdrawn" | "delivered">
   onSubagentSelect?: (sessionID: string | undefined) => void
   onSubagentInterrupt?: (sessionID: string) => void
 }
