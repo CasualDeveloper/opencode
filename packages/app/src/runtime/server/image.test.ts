@@ -162,6 +162,30 @@ describe("readLocalImage", () => {
     expect(resolveObjectURL(first!)).toBeUndefined()
   })
 
+  test.each([false, true])("media cancellation retires only orphaned requests (shared: %s)", async (shared) => {
+    const response = Promise.withResolvers<Response>()
+    const fixture = setup(() => response.promise.then((value) => value.clone()))
+    const cache = createMediaCache(() => fixture.api)
+    const controller = new AbortController()
+    const uri = `media:${"c".repeat(64)}`
+    const cancelled = cache.load(uri, "image/png", controller.signal)
+    const preview = shared ? cache.load(uri, "image/png") : undefined
+    try {
+      controller.abort()
+      expect(await cancelled).toBeUndefined()
+      expect(fixture.requests[0].init?.signal?.aborted).toBe(!shared)
+      const retried = cache.load(uri, "image/png")
+      expect(fixture.requests).toHaveLength(shared ? 1 : 2)
+      response.resolve(new Response(new Uint8Array([1, 2, 3])))
+      const url = await retried
+      expect(url).toStartWith("blob:")
+      if (preview) expect(await preview).toBe(url)
+    } finally {
+      response.resolve(new Response(new Uint8Array([1, 2, 3])))
+      cache.dispose()
+    }
+  })
+
   test("createMediaCache fetches media:<hash> refs from /api/experimental/media/:hash with auth and checks disposed before createObjectURL", async () => {
     const hashA = "a".repeat(64)
     const hashB = "b".repeat(64)

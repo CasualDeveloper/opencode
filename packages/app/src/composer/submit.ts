@@ -41,34 +41,6 @@ import {
 // the follow-ups sent from its own composer go through different submit machines. A session left out is `server`.
 const statuses = new Map<string, PromptStatusState>()
 
-// Each session's last send, until it has joined the data layer's send chain. A send first builds its request
-// (attachments read, mentions checked), which takes one longer than another, and must still join after the sends made
-// before it. Module-wide for the same reason as `statuses`.
-const joining = new Map<string, Promise<void>>()
-
-/** A send's place in its session's order: `before` is the send made before it, until that one has joined the chain. */
-type Turn = { before: Promise<void> | undefined; joined: () => void }
-
-/**
- * Runs one send in its session's order. Call it before the first await. `send` builds its request in whatever time
- * that takes, waits for `before`, puts the request in the data layer's send chain and calls `joined` at once. A send
- * that ends without joining does not hold the next one back.
- */
-function inTurn<T>(sessionID: string, send: (turn: Turn) => Promise<T>) {
-  const mine = Promise.withResolvers<void>()
-  const turn = { before: joining.get(sessionID), joined: () => mine.resolve() }
-
-  joining.set(sessionID, mine.promise)
-  void mine.promise.then(() => {
-    if (joining.get(sessionID) === mine.promise) joining.delete(sessionID)
-  })
-  const sending = send(turn)
-
-  void sending.then(turn.joined, turn.joined)
-
-  return sending
-}
-
 /** What a cancelled send fails with: Stop pressed while its request still waited on the gate. */
 const CANCELLED = new Error("The send was cancelled before its request left.")
 
@@ -450,12 +422,11 @@ async function runClientCommand(input: ComposerSubmitInput, prompt: Prompt, run:
   // following the same steer rule as server commands.
   const selection = currentSelection(input)
 
-  if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer")
-    await applySelection(
-      input.adapter.session(),
-      selection,
-      input.adapter.controls().model.selection.trackSessionCommit,
-    )
+  if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer") {
+    const session = input.adapter.session()
+    const track = input.adapter.controls().model.selection.trackSessionCommit
+    await session.data.session.mutate(session.id, () => applySelection(session, selection, track))
+  }
   clearClientCommand(input, prompt)
   await run()
 }
@@ -828,16 +799,9 @@ function restoreDraft(
 // A shell command, a server command and a prompt all leave through the session's one send chain, each in its turn, so
 // the server receives them in the order of the Enter presses, whatever each had to build or wait for first.
 function sendShell(session: ComposerSession, value: ComposerSubmission) {
-  return inTurn(session.id, async (turn) => {
-    if (turn.before) await turn.before
-
-    const sending = session.data.session.sequence(session.id, () =>
-      session.api.shell({ sessionID: session.id, id: value.id, command: value.text }),
-    )
-
-    turn.joined()
-    await sending
-  })
+  return session.data.session.sequence(session.id, () =>
+    session.api.shell({ sessionID: session.id, id: value.id, command: value.text }),
+  )
 }
 
 function sendCommand(
@@ -847,12 +811,9 @@ function sendCommand(
   track: ModelSelection["trackSessionCommit"] | undefined,
   gate: Gate | undefined,
 ) {
-  return inTurn(session.id, async (turn) => {
-    const request = await buildSubmissionRequest(session, value)
-
-    if (turn.before) await turn.before
-
-    const sending = session.data.session.sequence(
+  let request: Awaited<ReturnType<typeof buildSubmissionRequest>>
+  return session.data.session
+    .sequence(
       session.id,
       () =>
         session.api.command({
@@ -873,16 +834,13 @@ function sendCommand(
       // the gate stops there, before the composer's selection is committed: nothing of it reaches the server.
       async () => {
         await gate?.open
+        request = await buildSubmissionRequest(session, value)
 
         // Like queued prompts, queued commands must not apply the composer's selection to active work.
         if (value.delivery === "steer") await applySelection(session, value.selection, track)
       },
     )
-
-    turn.joined()
-    await sending
-    session.data.session.acceptSend(session.id)
-  })
+    .then(() => session.data.session.acceptSend(session.id))
 }
 
 async function applySelection(
@@ -916,16 +874,6 @@ function sendPrompt(
   track: ModelSelection["trackSessionCommit"] | undefined,
   gate: Gate | undefined,
 ) {
-  return inTurn(session.id, (turn) => admitPrompt(session, value, track, gate, turn))
-}
-
-async function admitPrompt(
-  session: ComposerSession,
-  value: ComposerSubmission,
-  track: ModelSelection["trackSessionCommit"] | undefined,
-  gate: Gate | undefined,
-  turn: Turn,
-) {
   const request = buildPromptRequest({
     prompt: value.prompt,
     context: value.context,
@@ -935,7 +883,6 @@ async function admitPrompt(
   })
   // Reserve admission before attachment reads; selection and revert commit belong to the server's batch.
   let cancel: (() => void) | undefined
-  if (turn.before) await turn.before
   const sending = session.data.session.prompt({
     id: value.id,
     sessionID: session.id,
@@ -975,7 +922,6 @@ async function admitPrompt(
       model: selectionModel(value.selection),
     },
   })
-  turn.joined()
   return sending.then(
     (admitted) => {
       if (admitted.delivery === "queue") cancel?.()

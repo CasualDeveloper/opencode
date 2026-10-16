@@ -46,6 +46,9 @@ const session: ComposerSession = {
   data: {
     location: { command: { list: () => [] } },
     session: {
+      mutate: async () => {
+        throw new Error("A pure submit transition must not perform I/O")
+      },
       prompt: async (value) => ({
         id: value.id ?? "msg_admitted",
         sessionID: value.sessionID,
@@ -344,19 +347,16 @@ describe("composer submit machine", () => {
     { name: "a prompt", input: {}, gated: true },
     { name: "a server command", input: { text: "/review", commands: [{ name: "review" }] }, gated: true },
     { name: "a shell command", input: { mode: "shell" }, gated: false },
-  ] satisfies { name: string; input: Partial<SubmitSnapshot>; gated: boolean }[])(
-    "$name waits on the gate: $gated",
-    (row) => {
-      const result = replay([{ type: "submit", snapshot: snapshot(row.input), done }, started(1)])
+  ] satisfies { name: string; input: Partial<SubmitSnapshot>; gated: boolean }[])("$name waits on the gate: $gated", (row) => {
+    const result = replay([{ type: "submit", snapshot: snapshot(row.input), done }, started(1)])
 
-      expect(result.effects.find((effect) => effect.type === "handoff")).toMatchObject({ gated: row.gated })
-      expect(result.state).toMatchObject({ type: "handing-off", gate: row.gated ? "pending" : "none" })
-      // A send with no gate settles as it always did.
-      expect(
-        transitionComposerSubmit(result.state, { type: "handoff.ready", attempt: 1, prompt: undefined }).state.type,
-      ).toBe(row.gated ? "sending" : "idle")
-    },
-  )
+    expect(result.effects.find((effect) => effect.type === "handoff")).toMatchObject({ gated: row.gated })
+    expect(result.state).toMatchObject({ type: "handing-off", gate: row.gated ? "pending" : "none" })
+    // A send with no gate settles as it always did.
+    expect(
+      transitionComposerSubmit(result.state, { type: "handoff.ready", attempt: 1, prompt: undefined }).state.type,
+    ).toBe(row.gated ? "sending" : "idle")
+  })
 
   test("Stop cancels a send that still waits on the gate, and interrupts the Session only when none does", () => {
     const cancel: ComposerSubmitTransition = {
@@ -381,10 +381,7 @@ describe("composer submit machine", () => {
     // Once the gate settled the request may have left: Stop is for the Session again, and never both.
     for (const state of [states["handing-off"], states.quoting]) {
       const settled = transitionComposerSubmit(state, { type: "gate.settled", attempt: 1 }).state
-      expect(transitionComposerSubmit(settled, { type: "stop" })).toEqual({
-        state: settled,
-        effects: [{ type: "interrupt" }],
-      })
+      expect(transitionComposerSubmit(settled, { type: "stop" })).toEqual({ state: settled, effects: [{ type: "interrupt" }] })
     }
 
     expect(transitionComposerSubmit(states.running, { type: "stop" }).effects).toEqual([{ type: "interrupt" }])
@@ -393,23 +390,13 @@ describe("composer submit machine", () => {
   test("a gate result for a cancelled or another send changes nothing", () => {
     const cancelled = transitionComposerSubmit(states.sending, { type: "stop" }).state
 
-    for (const state of [
-      cancelled,
-      states.sending,
-      states["handing-off"],
-      states.quoting,
-      states.preparing,
-      states.running,
-    ]) {
+    for (const state of [cancelled, states.sending, states["handing-off"], states.quoting, states.preparing, states.running]) {
       const attempt = state === cancelled ? 1 : 2
       expect(transitionComposerSubmit(state, { type: "gate.settled", attempt }).state).toBe(state)
     }
 
     // The next send's gate is its own.
-    const next = replay(
-      [{ type: "submit", snapshot: snapshot(), done }, started(2), { type: "gate.settled", attempt: 1 }],
-      cancelled,
-    )
+    const next = replay([{ type: "submit", snapshot: snapshot(), done }, started(2), { type: "gate.settled", attempt: 1 }], cancelled)
     expect(next.state).toMatchObject({ type: "handing-off", attempt: 2, gate: "pending" })
   })
 
