@@ -17,6 +17,7 @@ import type { Skill } from "../skill.js"
 import {
   BusyError,
   CompactionConflictError,
+  ContextDeliveryError,
   InboxConflictError,
   NotFoundError,
   PromptConflictError,
@@ -102,29 +103,35 @@ export const make = Effect.fn("Session.make")(function* () {
     yield* get(sessionID)
     yield* bus.publish(SessionEvent.Permissions, { sessionID, permissions: input.permissions })
   })
+  // Without a stored agent the Session runs as its Location's default, which its last step records.
+  const currentAgent = Effect.fnUntraced(function* (session: SessionSchema.Info) {
+    return session.agent ?? (yield* store.lastAssistantAfter({ sessionID: session.id }).pipe(Effect.orElseSucceed(() => undefined)))?.agent
+  })
   const switchAgent = Effect.fn("Session.switchAgent")(function* (
     sessionID: SessionSchema.ID,
     input: { agent: Agent.ID },
   ) {
-    const session = yield* get(sessionID)
-    // Without a stored agent the Session runs as its Location's default, which its last step records.
-    const current =
-      session.agent ?? (yield* store.lastAssistantAfter({ sessionID }).pipe(Effect.orElseSucceed(() => undefined)))?.agent
-    if (current === input.agent) return
-    yield* bus.publish(SessionEvent.AgentSelected, { sessionID, agent: input.agent, previous: session.agent })
+    yield* SessionInbox.serialized(
+      sessionID,
+      Effect.gen(function* () {
+        const session = yield* get(sessionID)
+        if ((yield* currentAgent(session)) === input.agent) return
+        yield* bus.publish(SessionEvent.AgentSelected, { sessionID, agent: input.agent, previous: session.agent })
+      }),
+    )
   })
   const switchModel = Effect.fn("Session.switchModel")(function* (
     sessionID: SessionSchema.ID,
     input: { model: Model.Ref },
   ) {
-    const session = yield* get(sessionID)
-    if (
-      session.model?.providerID === input.model.providerID &&
-      session.model.id === input.model.id &&
-      (session.model.variant ?? "default") === (input.model.variant ?? "default")
+    yield* SessionInbox.serialized(
+      sessionID,
+      Effect.gen(function* () {
+        const session = yield* get(sessionID)
+        if (sameModel(session.model, input.model)) return
+        yield* bus.publish(SessionEvent.ModelSelected, { sessionID, model: input.model, previous: session.model })
+      }),
     )
-      return
-    yield* bus.publish(SessionEvent.ModelSelected, { sessionID, model: input.model, previous: session.model })
   })
   const mutatePending = (
     sessionID: SessionSchema.ID,
@@ -365,13 +372,64 @@ export const make = Effect.fn("Session.make")(function* () {
                       return existing
                     }
                   }
-                  // Revert commit and replacement admission project in one transaction.
-                  const enqueued = session.revert
-                    ? (yield* bus.publishAll([
-                        [SessionEvent.RevertEvent.Committed, { sessionID, to: session.revert.messageID }],
-                        [SessionEvent.InboxEnqueued, { inboxID: messageID, sessionID, item: prepared }],
-                      ]))[1]
+                  if (input.context && prepared.delivery === "queue")
+                    return yield* new ContextDeliveryError({ sessionID })
+                  const context = input.context
+                    ? {
+                        id: input.context.id,
+                        item: SessionInbox.Item.make({
+                          type: "synthetic",
+                          payload: SessionInbox.SyntheticPayload.make({
+                            text: input.context.text,
+                            description: input.context.description,
+                            metadata: input.context.metadata,
+                          }),
+                          delivery: "steer",
+                        }),
+                      }
                     : undefined
+                  const enqueued = yield* Effect.gen(function* () {
+                    // Selection belongs to a winning steer admission, not preparation or a same-ID retry.
+                    const selection =
+                      input.delivery !== "queue" && prepared.delivery === "steer" ? input.selection : undefined
+                    const before = [
+                      ...(session.revert
+                        ? [[SessionEvent.RevertEvent.Committed, { sessionID, to: session.revert.messageID }] as const]
+                        : []),
+                      ...(selection && selection.agent !== (yield* currentAgent(session))
+                        ? [
+                            [
+                              SessionEvent.AgentSelected,
+                              { sessionID, agent: selection.agent, previous: session.agent },
+                            ] as const,
+                          ]
+                        : []),
+                      ...(selection && !sameModel(session.model, selection.model)
+                        ? [
+                            [
+                              SessionEvent.ModelSelected,
+                              { sessionID, model: selection.model, previous: session.model },
+                            ] as const,
+                          ]
+                        : []),
+                      ...(context
+                        ? [
+                            [
+                              SessionEvent.InboxEnqueued,
+                              { inboxID: context.id, sessionID, item: context.item },
+                            ] as const,
+                          ]
+                        : []),
+                    ]
+                    const first = before[0]
+                    if (!first) return undefined
+                    const events = yield* bus.publishAll([
+                      first,
+                      ...before.slice(1),
+                      [SessionEvent.InboxEnqueued, { inboxID: messageID, sessionID, item: prepared }],
+                    ])
+                    return events[events.length - 1]
+                  })
                   const recorded = enqueued
                     ? SessionInbox.User.make({
                         id: messageID,
@@ -666,6 +724,14 @@ export const make = Effect.fn("Session.make")(function* () {
   }
   return { forSession }
 })
+
+function sameModel(current: Model.Ref | undefined, model: Model.Ref) {
+  return (
+    current?.providerID === model.providerID &&
+    current.id === model.id &&
+    (current.variant ?? "default") === (model.variant ?? "default")
+  )
+}
 
 export type Handle = ReturnType<Effect.Success<ReturnType<typeof make>>["forSession"]>
 
