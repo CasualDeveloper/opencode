@@ -474,6 +474,7 @@ test("truncates committed revert messages without changing lifetime usage", asyn
   let cost = 0
   let tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
   const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/inbox`) return json({ data: [] })
     if (url.pathname === `/api/session/${sessionID}/message`) return json({ data: [], cursor: {} })
     if (url.pathname !== `/api/session/${sessionID}`) return
     return json({
@@ -1213,6 +1214,19 @@ test("removes committed revert messages from local state", async () => {
   const events = createEventStream()
   const sessionID = "session-revert"
   const calls = createFetch((url) => {
+    if (url.pathname === `/api/session/${sessionID}/inbox`)
+      return json({
+        data: [
+          {
+            id: "msg_001",
+            sessionID,
+            type: "user",
+            time: { created: 0 },
+            payload: { text: "msg_001" },
+            delivery: "steer",
+          },
+        ],
+      })
     if (url.pathname === `/api/session/${sessionID}/message`) return json({ data: [], cursor: {} })
   }, events)
   let data!: ReturnType<typeof useData>
@@ -3443,7 +3457,8 @@ test("hydrates durable pending prompts into the visible transcript", async () =>
   const calls = createFetch((url) => {
     if (url.pathname === `/api/session/${sessionID}/inbox`) return json({ data: [item] })
     if (url.pathname === `/api/session/${sessionID}/message`) return json({ data: [], cursor: {} })
-  })
+  }, createEventStream())
+  let client!: ReturnType<typeof useClient>
   let sync!: ReturnType<typeof useData>
   let ready!: () => void
   const mounted = new Promise<void>((resolve) => {
@@ -3451,6 +3466,7 @@ test("hydrates durable pending prompts into the visible transcript", async () =>
   })
 
   function Probe() {
+    client = useClient()
     sync = useData()
     onMount(ready)
     return <box />
@@ -3470,6 +3486,8 @@ test("hydrates durable pending prompts into the visible transcript", async () =>
 
   try {
     await mounted
+    // A disconnected stream invalidates in-flight hydration reads.
+    await wait(() => client.connection.status() === "connected")
     await sync.session.pending.sync(sessionID)
     expect(sync.session.message.list(sessionID)).toEqual([
       { id: item.id, ...Expected.user("waiting"), time: { created: 5 } },
