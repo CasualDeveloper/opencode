@@ -13,7 +13,6 @@ import { ThemeProvider, useTheme, type ColorScheme } from "@opencode/ui/theme"
 import { Font } from "@opencode/ui/font"
 import { LanguageProvider, UiI18nBridge, useLanguage } from "@/runtime/i18n/language"
 import { ExtensionStory } from "./extension"
-import { SettingsProvider } from "@/settings/model"
 
 function resolveScheme(value: unknown): ColorScheme {
   if (value === "light" || value === "dark" || value === "system") return value
@@ -88,11 +87,9 @@ const frame = createJSXDecorator((Story, context) => {
                     color: "var(--text-base)",
                   }}
                 >
-                  <SettingsProvider>
-                    <ExtensionStory file={context.parameters?.fileName}>
-                      <Story />
-                    </ExtensionStory>
-                  </SettingsProvider>
+                  <ExtensionStory file={context.parameters?.fileName}>
+                    <Story />
+                  </ExtensionStory>
                 </div>
               </MarkedProvider>
             </DialogProvider>

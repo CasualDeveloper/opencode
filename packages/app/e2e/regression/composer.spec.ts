@@ -24,7 +24,12 @@ test("the free usage limit opens the Go dialog once, leaves a readable notice, a
           id: "opencode",
           name: "OpenCode",
           models: {
-            "big-pickle": { id: "big-pickle", name: "Big Pickle", cost: { input: 0, output: 0 }, limit: { context: 200_000 } },
+            "big-pickle": {
+              id: "big-pickle",
+              name: "Big Pickle",
+              cost: { input: 0, output: 0 },
+              limit: { context: 200_000 },
+            },
           },
         },
         ...(state.authorized
@@ -34,7 +39,12 @@ test("the free usage limit opens the Go dialog once, leaves a readable notice, a
                 integrationID: "opencode-go",
                 name: "OpenCode Go",
                 models: {
-                  "glm-5-go": { id: "glm-5-go", name: "GLM-5 Go", cost: { input: 1, output: 1 }, limit: { context: 200_000 } },
+                  "glm-5-go": {
+                    id: "glm-5-go",
+                    name: "GLM-5 Go",
+                    cost: { input: 1, output: 1 },
+                    limit: { context: 200_000 },
+                  },
                 },
               },
             ]
@@ -48,7 +58,9 @@ test("the free usage limit opens the Go dialog once, leaves a readable notice, a
         id: "opencode",
         name: "OpenCode Console",
         methods: [{ id: "device", type: "oauth", label: "OpenCode Console account" }],
-        connections: state.authorized ? [{ type: "credential", id: "cred_console", label: "Anomaly", method: "oauth" }] : [],
+        connections: state.authorized
+          ? [{ type: "credential", id: "cred_console", label: "Anomaly", method: "oauth" }]
+          : [],
       },
       {
         id: "opencode-go",
@@ -282,7 +294,29 @@ async function expectCaretVisible(input: Locator) {
     .toBe(true)
 }
 
-test("prompt shortcuts rebind through Settings, preserve newline undo, and restore defaults", async ({ page }) => {
+async function promptShortcuts(page: Page) {
+  const settings = page.getByTestId("settings-screen")
+  const binding = (id: string) => settings.locator(`[data-keybind-id="prompt.${id}"]`)
+  const modifier = await page.evaluate(() => (/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? "Meta" : "Control"))
+
+  await page.keyboard.press(`${modifier}+,`)
+  await settings.getByRole("tab", { name: "Shortcuts", exact: true }).click()
+  await expect(settings.getByRole("heading", { name: "Keyboard shortcuts", exact: true })).toBeVisible()
+
+  return {
+    settings,
+    binding,
+    record: async (id: string, keys: string, label: string | RegExp) => {
+      await binding(id).click()
+      await expect(binding(id)).toHaveText("Press keys")
+      await page.keyboard.press(keys)
+      await expect(binding(id)).toHaveText(label)
+    },
+    close: () => settings.getByRole("button", { name: "Back to app", exact: true }).click(),
+  }
+}
+
+test("prompt shortcuts rebind through Settings and preserve selected newline undo", async ({ page }) => {
   const prompts: { text: unknown; delivery: unknown }[] = []
 
   const { editor } = await openSession(page, {
@@ -291,31 +325,14 @@ test("prompt shortcuts rebind through Settings, preserve newline undo, and resto
     onPrompt: ({ body }) => void prompts.push({ text: body.text, delivery: body.delivery }),
   })
 
-  const settings = page.getByTestId("settings-screen")
-  const binding = (id: string) => settings.locator(`[data-keybind-id="prompt.${id}"]`)
-
-  const shortcuts = async () => {
-    await page.keyboard.press("Control+,")
-    await settings.getByRole("tab", { name: "Shortcuts", exact: true }).click()
-    await expect(settings.getByRole("heading", { name: "Keyboard shortcuts", exact: true })).toBeVisible()
-  }
-
-  const record = async (id: string, keys: string, label: string | RegExp) => {
-    await binding(id).click()
-    await expect(binding(id)).toHaveText("Press keys")
-    await page.keyboard.press(keys)
-    await expect(binding(id)).toHaveText(label)
-  }
-
   await editor.fill("hello")
-  await shortcuts()
-  await expect(binding("submit")).toHaveText("Enter")
-  // Move alternate delivery first, freeing Ctrl+Enter for primary submission.
-  await record("submit.alternate", "Control+Shift+Enter", /^(Ctrl\+Shift\+|⌃⇧)Enter$/)
-  await record("submit", "Backspace", "Unassigned")
-  await record("newline", "Enter", "Enter")
-  await record("submit", "Control+Enter", /^(Ctrl\+|⌃)Enter$/)
-  await settings.getByRole("button", { name: "Back to app", exact: true }).click()
+  const shortcuts = await promptShortcuts(page)
+  await expect(shortcuts.binding("submit")).toHaveText("Enter")
+  await shortcuts.record("submit.alternate", "Backspace", "Unassigned")
+  await shortcuts.record("submit", "Backspace", "Unassigned")
+  await shortcuts.record("newline", "Enter", "Enter")
+  await shortcuts.record("submit", "Control+Enter", /^(Ctrl\+|⌃)Enter$/)
+  await shortcuts.close()
   await expect(editor).toHaveText("hello")
 
   await editor.press("ControlOrMeta+Home")
@@ -334,8 +351,30 @@ test("prompt shortcuts rebind through Settings, preserve newline undo, and resto
   await editor.press("Control+Enter")
   await expect(editor).toBeEmpty()
   await expect.poll(() => prompts).toEqual([{ text: "hello", delivery: "steer" }])
+})
 
-  await editor.fill("queued follow-up")
+test("prompt shortcuts support Alt+Enter, alternate delivery, disabling, and reset", async ({ page }) => {
+  const prompts: { text: unknown; delivery: unknown }[] = []
+
+  const { editor } = await openSession(page, {
+    name: "ComposerAlternateShortcuts",
+    sessionStatus: { ses_composeralternateshortcuts: { type: "running" } },
+    onPrompt: ({ body }) => void prompts.push({ text: body.text, delivery: body.delivery }),
+  })
+
+  const shortcuts = await promptShortcuts(page)
+  await shortcuts.binding("submit").hover()
+  await expect(page.getByRole("tooltip")).toHaveText(/Alt|⌥/)
+  // An exact Enter override releases the legacy Alt+Enter submit alias for newline.
+  await shortcuts.record("submit", "Enter", "Enter")
+  await shortcuts.record("newline", "Alt+Enter", /^(Alt\+|⌥)Enter$/)
+  await shortcuts.record("submit.alternate", "Control+Shift+Enter", /^(Ctrl\+Shift\+|⌃⇧)Enter$/)
+  await shortcuts.close()
+  await editor.fill("queued")
+  await editor.press("End")
+  await editor.press("Alt+Enter")
+  await editor.press("x")
+  await expect.poll(() => editor.innerText()).toBe("queued\nx")
   await expect(page.locator('[data-action="composer-alternate-delivery"]')).toHaveText(/Queue.*Enter/)
   await expect(page.locator('[data-action="composer-alternate-delivery"] [data-slot="keybind-v2-label"]')).toHaveText([
     /^(Ctrl|⌃)$/,
@@ -344,38 +383,32 @@ test("prompt shortcuts rebind through Settings, preserve newline undo, and resto
   ])
   await editor.press("Control+Shift+Enter")
   await expect(editor).toBeEmpty()
-  await expect
-    .poll(() => prompts)
-    .toEqual([
-      { text: "hello", delivery: "steer" },
-      { text: "queued follow-up", delivery: "queue" },
-    ])
+  await expect.poll(() => prompts).toEqual([{ text: "queued\nx", delivery: "queue" }])
 
-  await shortcuts()
+  const disabled = await promptShortcuts(page)
 
-  for (const id of ["submit", "newline", "submit.alternate"]) await record(id, "Backspace", "Unassigned")
-  await settings.getByRole("button", { name: "Back to app", exact: true }).click()
+  for (const id of ["submit", "newline", "submit.alternate"]) await disabled.record(id, "Backspace", "Unassigned")
+  await disabled.close()
   await editor.fill("disabled shortcuts")
 
-  for (const keys of ["Enter", "Control+Enter", "Control+Shift+Enter"]) await editor.press(keys)
+  for (const keys of ["Enter", "Alt+Enter", "Control+Enter", "Control+Shift+Enter"]) await editor.press(keys)
   await expect(editor).toHaveText("disabled shortcuts")
   await expect(page.locator('[data-action="composer-alternate-delivery"] [data-slot="keybind-v2-label"]')).toHaveCount(
     0,
   )
-  expect(prompts).toHaveLength(2)
+  expect(prompts).toHaveLength(1)
 
-  await shortcuts()
-  await settings.getByRole("button", { name: "Reset to defaults", exact: true }).click()
-  await expect(binding("submit")).toHaveText("Enter")
-  await settings.getByRole("button", { name: "Back to app", exact: true }).click()
+  const restored = await promptShortcuts(page)
+  await restored.settings.getByRole("button", { name: "Reset to defaults", exact: true }).click()
+  await expect(restored.binding("submit")).toHaveText("Enter")
+  await restored.close()
   await editor.fill("restored defaults")
   await editor.press("Enter")
   await expect(editor).toBeEmpty()
   await expect
     .poll(() => prompts)
     .toEqual([
-      { text: "hello", delivery: "steer" },
-      { text: "queued follow-up", delivery: "queue" },
+      { text: "queued\nx", delivery: "queue" },
       { text: "restored defaults", delivery: "steer" },
     ])
 })

@@ -10,7 +10,7 @@ import { type Component, createRenderEffect, ErrorBoundary, type JSX, type Paren
 import { Dynamic } from "solid-js/web"
 import { CommandProvider, useCommand } from "@/shell/commands/command"
 import { DesktopCommands } from "@/shell/commands/desktop"
-import { promptKeybindOptions, PROMPT_KEYBINDS } from "@/composer/keybinds"
+import { createPromptKeybinds, PROMPT_KEYBINDS } from "@/composer/keybinds"
 import { GlobalProvider } from "@/runtime/server/runtime"
 import { LanguageProvider, UiI18nBridge, type Locale, useLanguage } from "@/runtime/i18n/language"
 import { ServerConnection, ServersProvider } from "@/runtime/server/registry"
@@ -49,9 +49,10 @@ function BodyTypography() {
 function PromptCommands() {
   const command = useCommand()
   const language = useLanguage()
+  const keybinds = createPromptKeybinds()
 
   command.register("prompt", () =>
-    promptKeybindOptions({
+    keybinds.options({
       submit: language.t(PROMPT_KEYBINDS.submit.title),
       newline: language.t(PROMPT_KEYBINDS.newline.title),
       alternate: language.t(PROMPT_KEYBINDS.alternate.title),

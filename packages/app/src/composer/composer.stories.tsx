@@ -11,7 +11,7 @@ import { promptLength } from "./prompt-parts"
 import { SessionPreview } from "@/session/story-model"
 import { Skill } from "@opencode/schema/skill"
 import { resolveSessionComposerSelection } from "@/session/composer/selection"
-import { useSettings } from "@/settings/model"
+import { SettingsProvider, useSettings } from "@/settings/model"
 import { PROMPT_KEYBINDS } from "./keybinds"
 
 const selectedModel = {
@@ -244,6 +244,13 @@ const text = (content: string): ComposerPersistedState["prompt"] => [
 export default {
   title: "OpenCode/Composer/Flow",
   component: Composer,
+  decorators: [
+    (Story: () => JSX.Element) => (
+      <SettingsProvider>
+        <Story />
+      </SettingsProvider>
+    ),
+  ],
   parameters: { layout: "centered" },
 }
 
