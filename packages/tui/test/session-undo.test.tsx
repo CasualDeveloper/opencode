@@ -5,7 +5,8 @@ import { createAppFixture } from "./fixture/app"
 
 const promptText = "ALPHA first prompt"
 const sentWarning = "Prompt was already sent. Use /undo to take it back"
-const caseTimeout = 10_000
+// The first app fixture also pays for the cold TUI import; match the package's budget.
+const caseTimeout = 30_000
 
 test(
   "/undo waits for the admission of the prompt it withdraws",
@@ -217,6 +218,41 @@ test("failed prompt retries retain identity and a late echo clears only the rest
     },
   })
   await setup.waitFor(() => focusedComposer(setup)?.plainText === "")
+})
+
+test("a rejected prompt restores its cursor at the end of wide text after leaving the session", async () => {
+  const world = createWorld("rejected", `ses_restore_${crypto.randomUUID()}`)
+  const text = "中文末"
+  await using setup = await createAppFixture({
+    width: 100,
+    height: 30,
+    args: { sessionID: world.sessionID },
+    config: { animations: false, tabs: { mode: "off" }, keybinds: { "session.new": "f6" } },
+    fetch: world.fetch,
+  })
+  try {
+    await setup.ready
+    await setup.waitForFrame((frame) => frame.includes("Demo Model"))
+    await setup.mockInput.typeText(text)
+    setup.mockInput.pressEnter()
+    await world.modelRequested.promise
+    setup.mockInput.pressKey("F6")
+    await setup.waitForFrame((frame) => frame.includes("commands"))
+    world.releaseModel()
+    await setup.waitForFrame((frame) => frame.includes("Failed to send prompt"))
+    setup.events.emit({
+      id: "evt_restore_wide",
+      created: 2,
+      type: "tui.session.select",
+      location: { directory },
+      data: { sessionID: world.sessionID },
+    })
+    await setup.waitFor(() => focusedComposer(setup)?.plainText === text)
+    await setup.mockInput.typeText("x")
+    expect(focusedComposer(setup)?.plainText).toBe(`${text}x`)
+  } finally {
+    world.release()
+  }
 })
 
 test("restoring a rejected normal prompt resets a subsequently selected empty shell mode", async () => {
