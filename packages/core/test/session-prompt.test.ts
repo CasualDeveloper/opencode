@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import type { FileSystem } from "@opencode/core/filesystem"
-import { DateTime, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
+import { Context, DateTime, Deferred, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
 import path from "path"
 import { pathToFileURL } from "url"
 import { eq } from "drizzle-orm"
@@ -92,7 +92,14 @@ const locations = makeGlobalNode({
 })
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionProjector.node,
+      SessionStore.node,
+      Session.node,
+      LocationServiceMap.node,
+    ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
       SessionExecution.node.replace(execution),
@@ -168,6 +175,376 @@ const assistantRow = (id: SessionMessage.ID, seq: number) => {
   )
   return { id, session_id: sessionID, type, seq, time_created: 0, data }
 }
+
+describe("Session.prompt selection and context", () => {
+  const selection = {
+    agent: Agent.ID.make("plan"),
+    model: Model.Ref.make({
+      providerID: Provider.ID.make("provider"),
+      id: Model.ID.make("selected"),
+      variant: Model.VariantID.make("high"),
+    }),
+  }
+  const hooks = Effect.gen(function* () {
+    const sessions = yield* Session.Service
+    const session = yield* sessions.get(sessionID)
+    return Context.get(yield* Layer.build(LocationServiceMap.Service.get(session.location)), PluginHooks.Service)
+  })
+
+  for (const delivered of [false, true]) {
+    it.effect(`admits context before the user and ignores ${delivered ? "delivered" : "pending"} retry intent`, () =>
+      Effect.gen(function* () {
+        yield* setup
+        const sessions = yield* Session.Service
+        const contextID = SessionMessage.ID.create()
+        const prompt = yield* sessions.prompt({
+          sessionID,
+          text: "Inspect this",
+          context: { id: contextID, text: "editor context" },
+          selection,
+          resume: false,
+        })
+        expect((yield* sessions.inbox(sessionID)).map((item) => item.id)).toEqual([contextID, prompt.id])
+        expect(yield* admitted(contextID)).toMatchObject({ type: "synthetic", payload: { text: "editor context" } })
+        expect(yield* sessions.get(sessionID)).toMatchObject(selection)
+        if (delivered) {
+          const database = yield* Database.Service
+          const bus = yield* Bus.Service
+          yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+        }
+        const later = { ...selection.model, id: Model.ID.make("later") }
+        yield* sessions.switchModel({ sessionID, model: later })
+        const ignored = SessionMessage.ID.create()
+        const retry = yield* sessions.prompt({
+          sessionID,
+          id: prompt.id,
+          text: "ignored",
+          context: { id: ignored, text: "ignored" },
+          selection,
+          delivery: "queue",
+          files: [{ uri: "file:///missing" }],
+          resume: false,
+        })
+        expect(retry.payload).toEqual(prompt.payload)
+        if (!delivered) expect(retry.delivery).toBe(prompt.delivery)
+        expect(yield* admitted(ignored)).toBeUndefined()
+        expect((yield* sessions.get(sessionID)).model).toEqual(later)
+        expect(yield* eventCount("session.agent.selected.1")).toBe(1)
+        expect(yield* eventCount("session.inbox.enqueued.1")).toBe(2)
+      }),
+    )
+  }
+
+  for (const requested of ["steer", "queue"] as const) {
+    for (const prepared of ["steer", "queue"] as const) {
+      it.effect(`applies selection only for steer intent: ${requested} prepared as ${prepared}`, () =>
+        Effect.gen(function* () {
+          yield* setup
+          const sessions = yield* Session.Service
+          const before = yield* sessions.get(sessionID)
+          const hook = yield* hooks
+          yield* hook.register("session", "prompt", (event) =>
+            Effect.gen(function* () {
+              expect(event.selection).toEqual(selection)
+              const current = yield* sessions.get(sessionID).pipe(Effect.orDie)
+              expect(current.agent).toEqual(before.agent)
+              expect(current.model).toEqual(before.model)
+              // Promise plugins can mutate JavaScript objects despite readonly types.
+              if (event.selection) Object.assign(event.selection.model, { id: "ignored-hook-mutation" })
+              event.delivery = prepared
+            }),
+          )
+          const prompt = yield* sessions.prompt({
+            sessionID,
+            text: "intent",
+            selection,
+            delivery: requested,
+            resume: false,
+          })
+          const after = yield* sessions.get(sessionID)
+          expect(prompt.delivery).toBe(prepared)
+          expect(after.agent).toEqual(requested === "steer" && prepared === "steer" ? selection.agent : before.agent)
+          expect(after.model).toEqual(requested === "steer" && prepared === "steer" ? selection.model : before.model)
+        }),
+      )
+    }
+  }
+
+  for (const change of [false, true]) {
+    it.effect(
+      `rejects context when ${change ? "a hook changes delivery to queue" : "queue delivery is requested"}`,
+      () =>
+        Effect.gen(function* () {
+          yield* setup
+          const sessions = yield* Session.Service
+          const before = yield* sessions.get(sessionID)
+          if (change) {
+            const hook = yield* hooks
+            yield* hook.register("session", "prompt", (event) =>
+              Effect.sync(() => {
+                event.delivery = "queue"
+              }),
+            )
+          }
+          const error = yield* sessions
+            .prompt({
+              sessionID,
+              text: "queued",
+              context: { id: SessionMessage.ID.create(), text: "context" },
+              selection,
+              delivery: change ? "steer" : "queue",
+              resume: false,
+            })
+            .pipe(Effect.flip)
+          expect(error).toMatchObject({ _tag: "Session.ContextDeliveryError", sessionID })
+          expect(yield* sessions.get(sessionID)).toEqual(before)
+          expect(yield* admittedCount).toBe(0)
+        }),
+    )
+  }
+
+  it.effect("atomically replaces a staged user ID with selection and context", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const sessions = yield* Session.Service
+      const bus = yield* Bus.Service
+      const database = yield* Database.Service
+      const boundary = yield* sessions.prompt({ sessionID, text: "original", resume: false })
+      yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+      yield* bus.publish(SessionEvent.RevertEvent.Staged, { sessionID, revert: { messageID: boundary.id, files: [] } })
+      const contextID = SessionMessage.ID.create()
+      const replacement = yield* sessions.prompt({
+        sessionID,
+        id: boundary.id,
+        text: "replacement",
+        selection,
+        context: { id: contextID, text: "context" },
+        resume: false,
+      })
+      expect(replacement.payload.text).toBe("replacement")
+      expect(yield* sessions.get(sessionID)).toMatchObject(selection)
+      expect((yield* sessions.get(sessionID)).revert).toBeUndefined()
+      expect((yield* sessions.inbox(sessionID)).map((item) => item.id)).toEqual([contextID, boundary.id])
+      const events = yield* database.db
+        .select({ type: EventTable.type })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, sessionID))
+        .orderBy(EventTable.seq)
+        .all()
+        .pipe(Effect.orDie)
+      expect(events.slice(-5).map((event) => event.type)).toEqual([
+        "session.revert.committed.1",
+        "session.agent.selected.1",
+        "session.model.selected.1",
+        "session.inbox.enqueued.1",
+        "session.inbox.enqueued.1",
+      ])
+    }),
+  )
+
+  for (const failure of ["attachment", "context conflict", "same ID", "metadata"] as const) {
+    it.effect(`preserves revert, selection, and context after ${failure} failure`, () =>
+      Effect.gen(function* () {
+        yield* setup
+        const sessions = yield* Session.Service
+        const bus = yield* Bus.Service
+        const database = yield* Database.Service
+        const retained = yield* sessions.prompt({ sessionID, text: "retained", resume: false })
+        yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+        const boundary = yield* sessions.prompt({ sessionID, text: "boundary", resume: false })
+        yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+        yield* bus.publish(SessionEvent.RevertEvent.Staged, {
+          sessionID,
+          revert: { messageID: boundary.id, files: [] },
+        })
+        const before = yield* sessions.get(sessionID)
+        const id = SessionMessage.ID.create()
+        const contextID =
+          failure === "context conflict" ? retained.id : failure === "same ID" ? id : SessionMessage.ID.create()
+        const error = yield* sessions
+          .prompt({
+            sessionID,
+            id,
+            text: "replacement",
+            selection,
+            context: { id: contextID, text: "context" },
+            resume: false,
+            files: failure === "attachment" ? [{ uri: "data:image/png;base64,not-base64" }] : undefined,
+            metadata: failure === "metadata" ? { value: 1n } : undefined,
+          })
+          .pipe(Effect.exit)
+        expect(error._tag).toBe("Failure")
+        expect(yield* sessions.get(sessionID)).toEqual(before)
+        expect((yield* sessions.messages({ sessionID, order: "asc" })).map((message) => message.id)).toEqual([
+          retained.id,
+          boundary.id,
+        ])
+        expect(yield* admittedCount).toBe(0)
+        expect(yield* eventCount("session.agent.selected.1")).toBe(0)
+        expect(yield* eventCount("session.model.selected.1")).toBe(0)
+        expect(yield* eventCount("session.revert.committed.1")).toBe(0)
+      }),
+    )
+  }
+
+  for (const delivered of [false, true]) {
+    it.effect(
+      `ignores context and selection when a retained ${delivered ? "delivered" : "pending"} retry commits a revert`,
+      () =>
+        Effect.gen(function* () {
+          yield* setup
+          const sessions = yield* Session.Service
+          const database = yield* Database.Service
+          const bus = yield* Bus.Service
+          const retained = yield* sessions.prompt({
+            sessionID,
+            text: "retained",
+            delivery: delivered ? "steer" : "queue",
+            resume: false,
+          })
+          if (delivered) yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+          const boundary = yield* sessions.prompt({ sessionID, text: "boundary", resume: false })
+          yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+          yield* bus.publish(SessionEvent.RevertEvent.Staged, {
+            sessionID,
+            revert: { messageID: boundary.id, files: [] },
+          })
+          const before = yield* sessions.get(sessionID)
+          const contextID = SessionMessage.ID.create()
+          const retry = yield* sessions.prompt({
+            sessionID,
+            id: retained.id,
+            text: "ignored",
+            selection,
+            context: { id: contextID, text: "ignored" },
+            resume: false,
+          })
+          expect(retry.payload).toEqual(retained.payload)
+          const after = yield* sessions.get(sessionID)
+          expect(after.revert).toBeUndefined()
+          expect(after.agent).toEqual(before.agent)
+          expect(after.model).toEqual(before.model)
+          expect(yield* admitted(contextID)).toBeUndefined()
+          expect(yield* eventCount("session.agent.selected.1")).toBe(0)
+          expect(yield* eventCount("session.model.selected.1")).toBe(0)
+        }),
+    )
+  }
+
+  it.effect("does not repeat unchanged selection facts, including the default variant", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const sessions = yield* Session.Service
+      const selected = { ...selection, model: { ...selection.model, variant: undefined } }
+      yield* sessions.prompt({ sessionID, text: "first", selection: selected, resume: false })
+      yield* sessions.prompt({
+        sessionID,
+        text: "second",
+        selection: { ...selected, model: { ...selected.model, variant: Model.VariantID.make("default") } },
+        resume: false,
+      })
+      expect(yield* eventCount("session.agent.selected.1")).toBe(1)
+      expect(yield* eventCount("session.model.selected.1")).toBe(1)
+      expect(yield* admittedCount).toBe(2)
+    }),
+  )
+
+  for (const delivered of [false, true]) {
+    it.effect(
+      `ignores queued context on a concurrent retry after its ${delivered ? "delivered" : "pending"} winner commits`,
+      () =>
+        Effect.gen(function* () {
+          yield* setup
+          const sessions = yield* Session.Service
+          const hook = yield* hooks
+          const firstReady = yield* Deferred.make<void>()
+          const secondReady = yield* Deferred.make<void>()
+          const firstRelease = yield* Deferred.make<void>()
+          const secondRelease = yield* Deferred.make<void>()
+          yield* hook.register("session", "prompt", (event) =>
+            event.prompt.text === "winner"
+              ? Deferred.succeed(firstReady, undefined).pipe(Effect.andThen(Deferred.await(firstRelease)))
+              : Deferred.succeed(secondReady, undefined).pipe(Effect.andThen(Deferred.await(secondRelease))),
+          )
+          const id = SessionMessage.ID.create()
+          const contextID = SessionMessage.ID.create()
+          try {
+            const first = yield* sessions
+              .prompt({ sessionID, id, text: "winner", resume: false })
+              .pipe(Effect.forkChild)
+            yield* Deferred.await(firstReady)
+            const second = yield* sessions
+              .prompt({
+                sessionID,
+                id,
+                text: "retry",
+                delivery: "queue",
+                selection,
+                context: { id: contextID, text: "ignored" },
+                resume: false,
+              })
+              .pipe(Effect.forkChild)
+            yield* Deferred.await(secondReady)
+            yield* Deferred.succeed(firstRelease, undefined)
+            const winner = yield* Fiber.join(first)
+            if (delivered) {
+              const database = yield* Database.Service
+              const bus = yield* Bus.Service
+              yield* SessionInbox.promote(database.db, bus, sessionID, "steer")
+            }
+            yield* Deferred.succeed(secondRelease, undefined)
+            expect((yield* Fiber.join(second)).payload).toEqual(winner.payload)
+            expect(yield* admitted(contextID)).toBeUndefined()
+            expect(yield* eventCount("session.agent.selected.1")).toBe(0)
+            expect(yield* eventCount("session.model.selected.1")).toBe(0)
+            expect(yield* eventCount("session.inbox.enqueued.1")).toBe(1)
+          } finally {
+            yield* Deferred.succeed(firstRelease, undefined)
+            yield* Deferred.succeed(secondRelease, undefined)
+          }
+        }),
+    )
+  }
+
+  it.effect("keeps concurrent selection commits in request order across preparation", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const sessions = yield* Session.Service
+      const hook = yield* hooks
+      const entered = yield* Deferred.make<void>()
+      const ready = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* hook.register("session", "prompt", (event) =>
+        event.prompt.text === "first"
+          ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+      )
+      const later = { ...selection, model: { ...selection.model, id: Model.ID.make("later") } }
+      try {
+        const first = yield* sessions
+          .prompt({ sessionID, text: "first", selection, resume: false })
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(entered)
+        const second = yield* sessions
+          .prompt({ sessionID, text: "second", selection: later, resume: false })
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(ready)
+        expect((yield* sessions.get(sessionID)).model).not.toEqual(later.model)
+        yield* Deferred.succeed(release, undefined)
+        yield* Fiber.join(first)
+        yield* Fiber.join(second)
+        expect((yield* sessions.get(sessionID)).model).toEqual(later.model)
+        expect(
+          (yield* sessions.messages({ sessionID, order: "asc" }))
+            .filter((message) => message.type === "model-switched")
+            .map((message) => message.model),
+        ).toEqual([selection.model, later.model])
+      } finally {
+        yield* Deferred.succeed(release, undefined)
+      }
+    }),
+  )
+})
 
 describe("Session.prompt", () => {
   it.effect("exposes the execution registry", () =>

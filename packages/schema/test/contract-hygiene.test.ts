@@ -11,6 +11,7 @@ import { Model } from "../src/model.js"
 import { Project } from "../src/project.js"
 import { SkillAttachment } from "../src/prompt.js"
 import { Provider } from "../src/provider.js"
+import { PromptInput } from "../src/prompt-input.js"
 import { Pty } from "../src/pty.js"
 import { Session } from "../src/session.js"
 import { SessionMessage } from "../src/session-message.js"
@@ -25,6 +26,33 @@ import { PersistedRevert } from "../src/session-revert.js"
 import { AbsolutePath, optional } from "../src/schema.js"
 
 describe("contract hygiene", () => {
+  test("prompt selection round-trips and omits an unspecified model variant", () => {
+    const selection = PromptInput.Selection.make({
+      agent: Agent.ID.make("plan"),
+      model: Model.Ref.make({
+        providerID: Provider.ID.make("provider"),
+        id: Model.ID.make("model"),
+        variant: undefined,
+      }),
+    })
+    const encoded = { agent: "plan", model: { providerID: "provider", id: "model" } }
+    expect(Schema.encodeSync(PromptInput.Selection)(selection)).toEqual(encoded)
+    expect(Schema.decodeUnknownSync(PromptInput.Selection)(encoded)).toEqual(selection)
+    expect(() => Schema.decodeUnknownSync(PromptInput.Selection)({ model: encoded.model })).toThrow()
+  })
+
+  test("prompt context requires an identity and preserves synthetic payload encoding", () => {
+    expect(
+      Schema.encodeSync(PromptInput.Context)({
+        id: SessionMessage.ID.make("msg_context"),
+        text: "context",
+        description: undefined,
+        metadata: undefined,
+      }),
+    ).toEqual({ id: "msg_context", text: "context" })
+    expect(() => Schema.decodeUnknownSync(PromptInput.Context)({ text: "context" })).toThrow()
+  })
+
   test("restricts agent colors to six-digit hex values", () => {
     const decode = Schema.decodeUnknownSync(ConfigAgent.Color)
     expect(decode("#ff6b6b")).toBe("#ff6b6b")
