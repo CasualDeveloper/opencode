@@ -1418,7 +1418,7 @@ export function Prompt(props: PromptProps) {
             active.set(entry)
             markPromptRetryRestored(target, messageID)
           }
-          if (!active && restoreDraft(target, { prompt: entry, cursor: entry.text.length }))
+          if (!active && restoreDraft(target, { prompt: entry, cursor: Infinity }))
             markPromptRetryRestored(target, messageID)
         },
       )
