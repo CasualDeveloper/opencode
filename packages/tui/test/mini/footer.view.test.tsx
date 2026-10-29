@@ -173,7 +173,7 @@ async function renderFooter(
     onStatus?: (status: string) => void
     onMiniSettingChange?: (change: MiniSettingChange) => void
     queuedPrompts?: FooterQueuedPrompt[]
-    onQueuedPromptAction?: (action: QueuedPromptAction, inboxID: string) => Promise<void>
+    onQueuedPromptAction?: (action: QueuedPromptAction, inboxID: string) => Promise<void | "withdrawn" | "delivered">
   } = {},
 ) {
   const [view, setView] = createSignal<FooterView>(input.view ?? { type: "prompt" })
@@ -1293,7 +1293,7 @@ test.each(["queue", "steer"] as const)("direct footer toggles and deletes pendin
     onQueuedPromptAction: async (action, inboxID) => {
       actions.push(`${action}:${inboxID}`)
       app.setQueuedPrompts((prompts) =>
-        action === "cancel" ? [] : prompts.map((prompt) => ({ ...prompt, delivery: action })),
+        action === "cancel" || action === "withdraw" ? [] : prompts.map((prompt) => ({ ...prompt, delivery: action })),
       )
     },
   })
@@ -1360,6 +1360,7 @@ test("undo appends a pending prompt to the draft", async () => {
     onQueuedPromptAction: async (action, inboxID) => {
       actions.push(`${action}:${inboxID}`)
       app.setQueuedPrompts([])
+      return "withdrawn"
     },
   })
   try {
@@ -1371,7 +1372,7 @@ test("undo appends a pending prompt to the draft", async () => {
     app.mockInput.pressKey("u", { ctrl: true })
     await Bun.sleep(0)
     await app.renderOnce()
-    expect(actions).toEqual(["cancel:m-1"])
+    expect(actions).toEqual(["withdraw:m-1"])
     expect(app.captureCharFrame()).toContain("existing draft")
     expect(app.captureCharFrame()).toContain("look at main.ts")
     expect(app.captureCharFrame()).not.toContain("Pending prompts")
@@ -1386,32 +1387,38 @@ test("undo appends a pending prompt to the draft", async () => {
   }
 })
 
-test("undo leaves the queue and input alone when cancellation fails", async () => {
-  const statuses: string[] = []
-  const app = await renderFooter({
-    queuedPrompts: [{ messageID: "m-1", prompt: { text: "still queued", parts: [] }, delivery: "queue" }],
-    onStatus: (status) => statuses.push(status),
-    onQueuedPromptAction: async () => {
-      throw new Error("cancel failed")
-    },
-  })
-  try {
-    await app.renderOnce()
-    app.mockInput.pressKey("x", { ctrl: true })
-    app.mockInput.pressKey("q")
-    await app.renderOnce()
-    app.mockInput.pressKey("u", { ctrl: true })
-    await Bun.sleep(0)
-    await app.renderOnce()
-    expect(statuses.at(-1)).toContain("failed to undo pending prompt: cancel failed")
-    expect(app.captureCharFrame()).toContain("Pending prompts")
-    app.mockInput.pressKey("ESCAPE")
-    await app.renderOnce()
-    expect(app.captureCharFrame()).not.toContain("still queued")
-  } finally {
-    app.cleanup()
-  }
-})
+test.each(["failed", "delivered"] as const)(
+  "undo leaves the queue and input alone when withdrawal is %s",
+  async (outcome) => {
+    const statuses: string[] = []
+    const app = await renderFooter({
+      queuedPrompts: [{ messageID: "m-1", prompt: { text: "still queued", parts: [] }, delivery: "queue" }],
+      onStatus: (status) => statuses.push(status),
+      onQueuedPromptAction: async () => {
+        if (outcome === "delivered") return "delivered"
+        throw new Error("cancel failed")
+      },
+    })
+    try {
+      await app.renderOnce()
+      app.mockInput.pressKey("x", { ctrl: true })
+      app.mockInput.pressKey("q")
+      await app.renderOnce()
+      app.mockInput.pressKey("u", { ctrl: true })
+      await Bun.sleep(0)
+      await app.renderOnce()
+      expect(statuses.at(-1)).toContain(
+        outcome === "failed" ? "failed to undo pending prompt: cancel failed" : "Prompt was already sent",
+      )
+      expect(app.captureCharFrame()).toContain("Pending prompts")
+      app.mockInput.pressKey("ESCAPE")
+      await app.renderOnce()
+      expect(app.captureCharFrame()).not.toContain("still queued")
+    } finally {
+      app.cleanup()
+    }
+  },
+)
 
 test("undo retains mentioned files when the prompt is sent again", async () => {
   const submitted: RunPrompt[] = []
@@ -1441,6 +1448,7 @@ test("undo retains mentioned files when the prompt is sent again", async () => {
         request: { id: "per_undo", sessionID: "ses_child", action: "read", resources: ["src/index.ts"] },
       })
       app.setQueuedPrompts([])
+      return "withdrawn"
     },
     onSubmit: (prompt) => {
       submitted.push(prompt)

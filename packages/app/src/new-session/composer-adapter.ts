@@ -166,12 +166,16 @@ export function createNewSessionComposerAdapter(props: {
             shell: (input) => afterCreation(() => serverSDK.api.session.shell(input)),
             switchAgent: (input) => afterCreation(() => serverSDK.api.session.switchAgent(input)),
             switchModel: (input) => afterCreation(() => serverSDK.api.session.switchModel(input)),
-            revert: { commit: (input) => afterCreation(() => serverSDK.api.session.revert.commit(input)) },
           },
           data: {
             location: data.location,
             session: {
               setStatus: data.session.setStatus,
+              mutate: (sessionID, operation) =>
+                data.session.mutate(sessionID, async (reservation) => {
+                  await afterCreation(async () => undefined)
+                  return operation(reservation)
+                }),
               prompt: (input) =>
                 data.session.prompt({
                   ...input,

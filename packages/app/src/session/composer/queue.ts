@@ -105,56 +105,56 @@ export function createSessionQueue(input: {
             delivery: ComposerDelivery
           },
     ) => {
-      if (change.type === "reorder") return rewrite(change.inboxIDs)
+      const directory = location().directory
+      return data.session.mutate(input.sessionID, async (reservation) => {
+        if (change.type === "undo") {
+          const rehydrated = await undoQueuedPrompt({
+            prompt: change.prompt,
+            cancelInboxItem: () => reservation.withdraw(change.item.id),
+          })
+          if (rehydrated.outcome === "delivered") {
+            showToast({ title: language.t("session.queue.delivered") })
+            return
+          }
+          hide([change.item.id])
+          const prompt = mergePrompt(input.draft.current(), rehydrated.prompt)
+          input.draft.set(prompt, promptLength(prompt))
+          change.context.forEach((item) => input.draft.context.add(item))
+          input.restoreFocus(promptLength(prompt))
 
-      if (change.type === "undo") {
-        const rehydrated = await undoQueuedPrompt({
-          prompt: change.prompt,
-          cancelInboxItem: () =>
-            server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: change.item.id }),
-        })
+          return
+        }
 
-        hide([change.item.id])
-        const prompt = mergePrompt(input.draft.current(), rehydrated)
+        if ((await server.api.session.get({ sessionID: input.sessionID })).revert)
+          throw new Error("Cannot rewrite a queue while a revert is staged")
+        if (change.type === "reorder") return rewrite(change.inboxIDs, reservation.prompt)
 
-        input.draft.set(prompt, promptLength(prompt))
-        change.context.forEach((item) => input.draft.context.add(item))
-        input.restoreFocus(promptLength(prompt))
+        const replacement = await editedPromptInput(input.sessionID, directory, change.item, change.prompt, change.text)
 
-        return
-      }
+        // Admit before cancelling so a failed replacement never discards the original. A queued edit
+        // rebuilds its position in one rewrite, which leaves the queue unchanged if any admission fails.
+        const admission = { ...replacement, id: change.moved[change.original], delivery: change.delivery }
 
-      const replacement = await editedPromptInput(
-        input.sessionID,
-        location().directory,
-        change.item,
-        change.prompt,
-        change.text,
-      )
+        if (change.delivery === "queue")
+          return rewrite(undefined, reservation.prompt, {
+            original: change.original,
+            admission: { ...admission, resume: false },
+            moved: change.moved,
+          })
 
-      // Admit before cancelling so a failed replacement never discards the original. A queued edit
-      // rebuilds its position in one rewrite, which leaves the queue unchanged if any admission fails.
-      const admission = { ...replacement, id: change.moved[change.original], delivery: change.delivery }
+        // Like a queued edit, an original the server delivered meanwhile keeps the edit draft instead of sending twice.
+        const pending = await server.api.session.inbox.list({ sessionID: input.sessionID })
 
-      if (change.delivery === "queue")
-        return rewrite(undefined, {
-          original: change.original,
-          admission: { ...admission, resume: false },
-          moved: change.moved,
-        })
-
-      // Like a queued edit, an original the server delivered meanwhile keeps the edit draft instead of sending twice.
-      const pending = await server.api.session.inbox.list({ sessionID: input.sessionID })
-
-      if (!pending.some((item) => item.id === change.original && item.type === "user" && item.delivery === "queue"))
-        throw new Error("Queued prompt was delivered before the edit")
-      const background = input.background()
-      await data.session.prompt(admission)
-      void background?.move()
-      setState("sent", (edit) => edit.original === change.original, "admitted", true)
-      // Cancelling is a no-op once the original is gone, so one retry is safe.
-      const cancel = () => server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: change.original })
-      await cancel().catch(cancel)
+        if (!pending.some((item) => item.id === change.original && item.type === "user" && item.delivery === "queue"))
+          throw new Error("Queued prompt was delivered before the edit")
+        const background = input.background()
+        await reservation.prompt(admission)
+        void background?.move()
+        setState("sent", (edit) => edit.original === change.original, "admitted", true)
+        // Cancelling is a no-op once the original is gone, so one retry is safe.
+        const cancel = () => server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: change.original })
+        await cancel().catch(cancel)
+      })
     },
     onSuccess: (_data, change) => {
       if (change.type !== "edit") return
@@ -230,6 +230,7 @@ export function createSessionQueue(input: {
   // Without `inboxIDs` the server's current order is kept.
   const rewrite = async (
     inboxIDs: string[] | undefined,
+    admit: typeof data.session.prompt,
     replace?: { original: string; admission: Parameters<typeof data.session.prompt>[0]; moved: Record<string, string> },
   ) => {
     const pending = await server.api.session.inbox.list({ sessionID: input.sessionID })
@@ -284,7 +285,7 @@ export function createSessionQueue(input: {
       const id = admission.id ?? SessionMessage.ID.create()
 
       replacements.push(id)
-      await data.session.prompt({ ...admission, id }).catch(async (error) => {
+      await admit({ ...admission, id }).catch(async (error) => {
         await Promise.all(
           replacements.map((inboxID) =>
             server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID }).then(
@@ -316,22 +317,28 @@ export function createSessionQueue(input: {
     if (state.editing?.id === id) cancelEdit()
     const background = input.background()
 
-    return server.api.session.inbox.update({ sessionID: input.sessionID, inboxID: id, delivery: "steer" }).then(
-      () => {
-        void background?.move()
-        hide([id])
-      },
-      () => notify(),
-    )
+    return data.session
+      .mutate(input.sessionID, () =>
+        server.api.session.inbox.update({ sessionID: input.sessionID, inboxID: id, delivery: "steer" }),
+      )
+      .then(
+        () => {
+          void background?.move()
+          hide([id])
+        },
+        () => notify(),
+      )
   }
 
   const remove = (id: string) => {
     if (state.editing?.id === id) cancelEdit()
 
-    return server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: id }).then(
-      () => hide([id]),
-      () => notify(),
-    )
+    return data.session
+      .mutate(input.sessionID, () => server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: id }))
+      .then(
+        () => hide([id]),
+        () => notify(),
+      )
   }
 
   const undo = (id: string) => {
@@ -589,37 +596,30 @@ export function queuedPromptAttachments(item: QueuedPrompt): (ImageAttachmentPar
   const inline = files.filter((file) => isComposerAttachment(file))
 
   return [
-    ...inline.map(
-      (file, index): ImageAttachmentPart => ({
-        type: "image",
-        id: `${item.id}:file:${index}`,
-        filename: file.name ?? "attachment",
-        mime: file.mime,
-        blob: createLegacyBlobReference("uri" in file ? file.uri : `data:${file.mime};base64,${file.data}`),
-      }),
-    ),
-    ...(readPromptPresentation(item.payload.metadata)?.attachments ?? []).map(
-      (file, index): PathAttachmentPart => ({
-        type: "path",
-        id: `${item.id}:path:${index}`,
-        filename: file.name,
-        mime: file.mime,
-        path: file.path,
-      }),
-    ),
+    ...inline.map((file, index): ImageAttachmentPart => ({
+      type: "image",
+      id: `${item.id}:file:${index}`,
+      filename: file.name ?? "attachment",
+      mime: file.mime,
+      blob: createLegacyBlobReference("uri" in file ? file.uri : `data:${file.mime};base64,${file.data}`),
+    })),
+    ...(readPromptPresentation(item.payload.metadata)?.attachments ?? []).map((file, index): PathAttachmentPart => ({
+      type: "path",
+      id: `${item.id}:path:${index}`,
+      filename: file.name,
+      mime: file.mime,
+      path: file.path,
+    })),
   ]
 }
 
 // Pin `media:<hash>` attachments before cancelling: the cancel releases the item's blob refs and sweeps blobs
 // nothing else references, so a pin that fails leaves the item queued.
-export async function undoQueuedPrompt<A>(input: {
-  prompt: Prompt
-  cancelInboxItem: () => Promise<A>
-}): Promise<Prompt> {
+export async function undoQueuedPrompt<A>(input: { prompt: Prompt; cancelInboxItem: () => Promise<A> }) {
   const pinned = await pinPromptMedia(input.prompt)
-  await input.cancelInboxItem()
+  const outcome = await input.cancelInboxItem()
 
-  return pinned
+  return { prompt: pinned, outcome }
 }
 
 // A stored file re-admits by the URI it came from, as the TUI does, so a file:// reference keeps its

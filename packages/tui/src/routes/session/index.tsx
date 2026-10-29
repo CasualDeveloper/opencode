@@ -103,6 +103,8 @@ import {
   cacheReuseDrop,
   completeGroupBoundary,
   createSessionRows,
+  loadRevertMessages,
+  partitionRevertMessages,
   messageBoundaryIDs,
   resolvePart,
   sessionRowID,
@@ -175,18 +177,9 @@ export function Session(props: {
   const messages = () => data.session.message.list(route.sessionID)
   const messageIndexes = createMemo(() => new Map(messages().map((message, index) => [message.id, index])))
   const legacy = createMemo(() => SessionTurn.legacy(messages()))
-  const messagesBeforeRevert = () => {
-    const messageID = session()?.revert?.messageID
-    if (!messageID) return messages()
-    const index = messages().findIndex((message) => message.id === messageID)
-    return index === -1 ? messages() : messages().slice(0, index)
-  }
-  const messagesFromRevert = () => {
-    const messageID = session()?.revert?.messageID
-    if (!messageID) return []
-    const index = messages().findIndex((message) => message.id === messageID)
-    return index === -1 ? [] : messages().slice(index)
-  }
+  const revertMessages = createMemo(() => partitionRevertMessages(messages(), session()?.revert?.messageID))
+  const messagesBeforeRevert = () => revertMessages().before
+  const messagesFromRevert = () => revertMessages().from
   const currentLocation = useLocation()
   const location = createMemo(() => session()?.location ?? currentLocation.ref)
 
@@ -651,11 +644,11 @@ export function Session(props: {
       const current = prompt()
       const wasEmpty = Boolean(
         current &&
-          !current.current.text.trim() &&
-          !current.current.files?.length &&
-          !current.current.agents?.length &&
-          !current.current.skills?.length &&
-          !current.current.pasted.length,
+        !current.current.text.trim() &&
+        !current.current.files?.length &&
+        !current.current.agents?.length &&
+        !current.current.skills?.length &&
+        !current.current.pasted.length,
       )
       if (!wasEmpty || !current) return
       const list = messages()
@@ -682,13 +675,13 @@ export function Session(props: {
         const active = prompt()
         return Boolean(
           !sessionDisposed &&
-            route.sessionID === event.data.sessionID &&
-            active &&
-            active.current.text === expectedText &&
-            (active.current.files?.length ?? 0) === expectedFiles &&
-            (active.current.agents?.length ?? 0) === expectedAgents &&
-            (active.current.skills?.length ?? 0) === expectedSkills &&
-            active.current.pasted.length === expectedPasted,
+          route.sessionID === event.data.sessionID &&
+          active &&
+          active.current.text === expectedText &&
+          (active.current.files?.length ?? 0) === expectedFiles &&
+          (active.current.agents?.length ?? 0) === expectedAgents &&
+          (active.current.skills?.length ?? 0) === expectedSkills &&
+          active.current.pasted.length === expectedPasted,
         )
       }
       const canOpen = () =>
@@ -747,20 +740,22 @@ export function Session(props: {
     }),
   )
   const runPendingAction = createSingleFlight<string>()
-  const mutatePending = async (action: PendingAction, inboxID: string, failureLabel?: string) => {
+  const mutatePending = async (action: PendingAction, inboxID: string) => {
+    const sessionID = route.sessionID
     const result = await runPendingAction(inboxID, async () => {
-      const request =
+      const request = data.session.mutate(sessionID, () =>
         action === "steer"
-          ? client.api.session.inbox.update({ sessionID: route.sessionID, inboxID, delivery: "steer" })
+          ? client.api.session.inbox.update({ sessionID, inboxID, delivery: "steer" })
           : action === "queue"
-            ? client.api.session.inbox.update({ sessionID: route.sessionID, inboxID, delivery: "queue" })
-            : client.api.session.inbox.cancel({ sessionID: route.sessionID, inboxID })
+            ? client.api.session.inbox.update({ sessionID, inboxID, delivery: "queue" })
+            : client.api.session.inbox.cancel({ sessionID, inboxID }),
+      )
       const error = await request.then(
         () => undefined,
         (error) => error,
       )
       if (!error) return true
-      const label = failureLabel ?? (action === "cancel" ? "delete" : action)
+      const label = action === "cancel" ? "delete" : action
       toast.show({ title: `Failed to ${label} pending prompt`, message: errorMessage(error), variant: "error" })
       return false
     })
@@ -804,19 +799,37 @@ export function Session(props: {
                 toast.show({ message: "Leave shell mode before undoing a queued prompt", variant: "error" })
                 return
               }
-              void mutatePending("cancel", queued.id, "undo").then((undone) => {
-                if (!undone) return
-                target.setMode("normal")
-                target.set(
-                  appendPrompt(
-                    target.current,
-                    { ...projectedPromptInput(queued.payload), pasted: [] },
-                    renderer.widthMethod,
-                  ),
-                )
-                dialog.clear()
-                target.focus()
-              })
+              void runPendingAction(queued.id, () =>
+                data.session.input.withdraw({ sessionID: route.sessionID, inboxID: queued.id }),
+              ).then(
+                (outcome) => {
+                  if (!outcome) return
+                  if (outcome === "delivered") {
+                    toast.show({
+                      message: "Prompt was already sent. Use /undo to take it back",
+                      variant: "warning",
+                    })
+                    return
+                  }
+                  target.setMode("normal")
+                  target.set(
+                    appendPrompt(
+                      target.current,
+                      { ...projectedPromptInput(queued.payload), pasted: [] },
+                      renderer.widthMethod,
+                    ),
+                  )
+                  dialog.clear()
+                  target.focus()
+                },
+                (error) => {
+                  toast.show({
+                    title: "Failed to undo pending prompt",
+                    message: errorMessage(error),
+                    variant: "error",
+                  })
+                },
+              )
             },
           },
         ]}
@@ -1109,29 +1122,31 @@ export function Session(props: {
       group: "Session",
       slash: { name: "undo" },
       run: () => {
-        const message = messagesBeforeRevert().findLast(
-          (message): message is SessionMessageUser => message.type === "user" && !!message.text.trim(),
-        )
-        if (!message) {
-          toast.show({ message: "Nothing to undo", variant: "error", duration: 3000 })
-          dialog.clear()
-          return
-        }
         const sessionID = route.sessionID
         const target = prompt()
-        void (async () => {
-          if (pendingDeliveries().has(message.id)) {
-            if (!(await mutatePending("cancel", message.id))) return
-          } else {
-            await client.api.session.interrupt({ sessionID })
-            await client.api.experimental.session.wait({ sessionID })
-            await client.api.session.revert.stage({ sessionID, messageID: message.id })
-          }
-          target?.set({
-            ...projectedPromptInput(message),
-            pasted: [],
+        const history = data.session.message.capture(sessionID)
+        void data.session
+          .mutate(sessionID, async (reservation) => {
+            const boundary = (await client.api.session.get({ sessionID })).revert?.messageID
+            const loaded = boundary
+              ? await loadRevertMessages({
+                  boundary,
+                  messages: history,
+                  more: () => data.session.message.more(sessionID),
+                  loadMore: () => data.session.message.loadMore(sessionID),
+                })
+              : history()
+            const message = partitionRevertMessages(loaded ?? [], boundary).before.findLast(
+              (message): message is SessionMessageUser => message.type === "user" && !!message.text.trim(),
+            )
+            if (!message) {
+              toast.show({ message: "Nothing to undo", variant: "error", duration: 3000 })
+              return
+            }
+            await reservation.undo(message.id)
+            target?.set({ ...projectedPromptInput(message), pasted: [] })
           })
-        })().catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
+          .catch((error) => toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }))
         dialog.clear()
       },
     },
@@ -1143,7 +1158,7 @@ export function Session(props: {
       slash: { name: "redo" },
       run: () => {
         void (async () => {
-          const error = await client.api.session.revert.clear({ sessionID: route.sessionID }).then(
+          const error = await data.session.revert.clear({ sessionID: route.sessionID }).then(
             () => undefined,
             (error) => error,
           )
@@ -1270,7 +1285,9 @@ export function Session(props: {
       },
       run: () => {
         const lastAssistantMessage = messagesBeforeRevert().findLast(
-          (msg) => msg.type === "assistant" || (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
+          (msg) =>
+            msg.type === "assistant" ||
+            (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
         )
         if (!lastAssistantMessage) {
           toast.show({ message: "No assistant messages found", variant: "error" })
@@ -1580,9 +1597,7 @@ export function Session(props: {
                   onMouseOut={() => setLatestHovered(false)}
                   onMouseUp={toBottom}
                 >
-                  <text
-                    fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
-                  >
+                  <text fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}>
                     Jump to latest ↓
                   </text>
                 </box>
@@ -1628,12 +1643,7 @@ export function Session(props: {
                     }}
                   </Show>
                 </Match>
-                <Match
-                  when={
-                    session() &&
-                    currentLocation.error?.location.directory === session()!.location.directory
-                  }
-                >
+                <Match when={session() && currentLocation.error?.location.directory === session()!.location.directory}>
                   <SessionLocationMissing
                     directory={session()!.location.directory}
                     projectID={session()!.projectID}
@@ -2260,7 +2270,7 @@ function RevertMessage(props: {
   const ctx = use()
   const theme = useTheme()
   const route = useRouteData("session")
-  const client = useClient()
+  const data = useData()
   const toast = useToast()
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
@@ -2272,7 +2282,7 @@ function RevertMessage(props: {
       onMouseUp={() => {
         if (renderer.getSelection()?.getSelectedText()) return
         void (async () => {
-          const error = await client.api.session.revert.clear({ sessionID: route.sessionID }).then(
+          const error = await data.session.revert.clear({ sessionID: route.sessionID }).then(
             () => undefined,
             (error) => error,
           )
@@ -2929,9 +2939,7 @@ function BlockTool(props: BlockToolProps) {
               <Show
                 when={props.spinner}
                 fallback={
-                  <text
-                    fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
-                  >
+                  <text fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}>
                     {title()}
                   </text>
                 }
@@ -3119,11 +3127,7 @@ function ShellDisplay(props: {
           <Show
             when={isRunning()}
             fallback={
-              <text
-                fg={theme.text.base}
-                wrapMode={expanded() ? "word" : "char"}
-                maxHeight={expanded() ? undefined : 2}
-              >
+              <text fg={theme.text.base} wrapMode={expanded() ? "word" : "char"} maxHeight={expanded() ? undefined : 2}>
                 {limitedInput()}
               </text>
             }
@@ -3224,7 +3228,9 @@ function Read(props: ToolProps) {
         Read {pathFormatter.format(stringValue(props.input.path))}
         <Show when={props.input.offset !== undefined || props.input.limit !== undefined}>
           :{finiteNumber(props.input.offset) || 1}-
-          {props.input.limit ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1 : ""}
+          {props.input.limit
+            ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1
+            : ""}
         </Show>
       </InlineTool>
       <For each={loaded()}>

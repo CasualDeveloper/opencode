@@ -260,13 +260,15 @@ describe("queuedPromptAttachments", () => {
           events.push("cancelInboxItem")
           // The cancel releases the item's blob refs and sweeps the blob nothing else references.
           blobs.delete(hash)
+          return "withdrawn" as const
         },
       })
 
       expect(events).toEqual([`load:${mediaUri}`, "cancelInboxItem"])
       expect(blobs.has(hash)).toBe(false)
 
-      const imagePart = pinned.find((part) => part.type === "image")
+      expect(pinned.outcome).toBe("withdrawn")
+      const imagePart = pinned.prompt.find((part) => part.type === "image")
       expect(imagePart?.type).toBe("image")
 
       if (imagePart?.type !== "image") return

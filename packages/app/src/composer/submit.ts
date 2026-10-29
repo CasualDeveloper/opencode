@@ -16,9 +16,6 @@ import { parseSlashCommand } from "./client-slash-command"
 
 const submitting = new WeakSet<object>()
 
-// The model each session was last switched to from this client, by session ID.
-const switched = new Map<string, string>()
-
 type ComposerSubmission = {
   id: SessionMessage.ID
   mode: "normal" | "shell"
@@ -78,12 +75,11 @@ export function createComposerSubmit(input: ComposerSubmitInput) {
         // following the same steer rule as server commands.
         const selection = currentSelection(input)
 
-        if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer")
-          await applySelection(
-            input.adapter.session(),
-            selection,
-            input.adapter.controls().model.selection.trackSessionCommit,
-          )
+        if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer") {
+          const session = input.adapter.session()
+          const track = input.adapter.controls().model.selection.trackSessionCommit
+          await session.data.session.mutate(session.id, () => applySelection(session, selection, track))
+        }
         clearClientCommand(input, prompt)
         await clientCommand()
       } catch (error) {
@@ -134,24 +130,26 @@ export function createComposerSubmit(input: ComposerSubmitInput) {
     }
 
     if (submitting.has(input.adapter.state)) return
-
-    // Images restored from a draft or history carry ids only; the optimistic message shows their URLs.
-    const value = {
-      ...read,
-      images: await Promise.all(
-        read.images.map(async (image) => ({
-          ...image,
-          blob: { ...image.blob, url: (await resolveBlobUrl(image.blob)) ?? image.blob.url },
-        })),
-      ),
-    }
-
     submitting.add(input.adapter.state)
     const comments = input.comments.capture()
     // Capture command intent before starting a session in a worktree whose catalog has not loaded.
-    const command = value.mode === "normal" ? findCommand(input.commands(), value.text) : undefined
+    const command = read.mode === "normal" ? findCommand(input.commands(), read.text) : undefined
 
     try {
+      // Existing-session attachments prepare inside the send chain. New sessions need
+      // their image URLs for the handoff preview before creation.
+      const value =
+        input.adapter.kind === "new-session" && read.images.length
+          ? {
+              ...read,
+              images: await Promise.all(
+                read.images.map(async (image) => ({
+                  ...image,
+                  blob: { ...image.blob, url: (await resolveBlobUrl(image.blob)) ?? image.blob.url },
+                })),
+              ),
+            }
+          : read
       const started =
         input.adapter.kind === "active-session"
           ? { session: input.adapter.session(), cleanupReady: Promise.resolve() }
@@ -506,29 +504,31 @@ function findCommand(commands: ReturnType<ComposerSubmitInput["commands"]>, text
   return { command: parsed.name, arguments: parsed.input }
 }
 
-async function sendCommand(
+function sendCommand(
   session: ComposerSession,
   value: ComposerSubmission,
   command: { command: string; arguments: string },
   track?: ModelSelection["trackSessionCommit"],
 ) {
-  const request = await buildSubmissionRequest(session, value)
+  return session.data.session.mutate(session.id, async () => {
+    const request = await buildSubmissionRequest(session, value)
 
-  // Like queued prompts, queued commands must not apply the composer's selection to active work.
-  if (value.delivery === "steer") await applySelection(session, value.selection, track)
-  await session.api.command({
-    sessionID: session.id,
-    name: command.command,
-    text: command.arguments,
-    files: request.files.map((file) => ({
-      uri: file.uri,
-      name: file.name,
-      description: file.description,
-      mention: file.mention,
-    })),
-    agents: request.agents,
-    skills: request.skills,
-    delivery: value.delivery,
+    // Like queued prompts, queued commands must not apply the composer's selection to active work.
+    if (value.delivery === "steer") await applySelection(session, value.selection, track)
+    await session.api.command({
+      sessionID: session.id,
+      name: command.command,
+      text: command.arguments,
+      files: request.files.map((file) => ({
+        uri: file.uri,
+        name: file.name,
+        description: file.description,
+        mention: file.mention,
+      })),
+      agents: request.agents,
+      skills: request.skills,
+      delivery: value.delivery,
+    })
   })
 }
 
@@ -536,7 +536,6 @@ async function applySelection(
   session: ComposerSession,
   selection: ComposerSelection,
   track?: ModelSelection["trackSessionCommit"],
-  beforeModel?: () => Promise<void>,
 ) {
   const cancel = track?.(session.id, selection)
 
@@ -547,71 +546,59 @@ async function applySelection(
       await session.api.switchAgent({ sessionID: session.id, agent: selection.agent })
     }
 
-    await beforeModel?.()
-
-    // Skip an unchanged model so a send never waits on that request. An agent switch or a revert can move the
-    // model, and cached SSE state may lag this client's earlier switch, which must also match.
-    const model = `${selection.model.providerID}/${selection.model.modelID}/${selection.variant ?? ""}`
-    const saved = current?.model && `${current.model.providerID}/${current.model.id}/${current.model.variant ?? ""}`
-
-    if (
-      current?.agent === selection.agent &&
-      !current.revert &&
-      saved === model &&
-      (switched.get(session.id) ?? model) === model
-    )
-      return
+    // The server deduplicates unchanged selections; cached SSE state may still be behind an earlier switch.
     await session.api.switchModel({
       sessionID: session.id,
       model: { id: selection.model.modelID, providerID: selection.model.providerID, variant: selection.variant },
     })
-    switched.set(session.id, model)
   } catch (error) {
     cancel?.()
     throw error
   }
 }
 
-async function sendPrompt(
+function sendPrompt(
   session: ComposerSession,
   value: ComposerSubmission,
   track: ModelSelection["trackSessionCommit"] | undefined,
 ) {
-  const request = await buildSubmissionRequest(session, value)
-
-  // Switching agent or model reconfigures the session immediately, and with it
-  // the remainder of a running turn. A steer targets that turn, so its
-  // selection applies now; a queued follow-up must not reconfigure the turn it
-  // waits behind, so it runs with the session selection at delivery time (the
-  // intended selection stays recorded in its metadata).
-  // Like the TUI, a staged revert settles after the agent switch and before the model switch and admission. The
-  // server would otherwise commit it on admission and delete every row from its boundary on, the model switch too.
-  const settle = async () => {
-    if (session.current()?.revert) await session.api.revert.commit({ sessionID: session.id })
-  }
-
-  const commit = () => (value.delivery === "steer" ? applySelection(session, value.selection, track, settle) : settle())
-  // The data layer admits the prompt locally before it commits the selection, so a steer shows as pending while the
-  // selection commits. A staged revert settles before admission instead: its committed echo removes every local row
-  // from its boundary on. Only an idle session stages one, and a prompt into it starts work rather than showing as
-  // pending.
-  const staged = !!session.current()?.revert
-
-  if (staged) await commit()
-  // A retried admission reuses the first commit rather than switching again.
-  let committed: Promise<void> | undefined
-
-  const admission = {
+  const request = buildPromptRequest({
+    prompt: value.prompt,
+    context: value.context,
+    images: [],
+    text: value.text,
+    sessionDirectory: session.directory,
+  })
+  // Reserve admission before attachment reads; selection and revert commit belong to the server's batch.
+  let cancel: (() => void) | undefined
+  const sending = session.data.session.prompt({
     id: value.id,
     sessionID: session.id,
     delivery: value.delivery,
+    selection:
+      value.delivery === "steer"
+        ? {
+            agent: value.selection.agent,
+            model: {
+              id: value.selection.model.modelID,
+              providerID: value.selection.model.providerID,
+              variant: value.selection.variant,
+            },
+          }
+        : undefined,
     text: request.text,
-    files: request.files.map((file) => ({
-      uri: file.uri,
-      name: file.name,
-      description: file.description,
-      mention: file.mention,
-    })),
+    prepare: async () => {
+      const prepared = await buildSubmissionRequest(session, value)
+      if (value.delivery === "steer") cancel = track?.(session.id, value.selection)
+      return {
+        files: prepared.files.map((file) => ({
+          uri: file.uri,
+          name: file.name,
+          description: file.description,
+          mention: file.mention,
+        })),
+      }
+    },
     agents: request.agents,
     skills: request.skills,
     metadata: {
@@ -621,10 +608,17 @@ async function sendPrompt(
       agent: value.selection.agent,
       model: selectionModel(value.selection),
     },
-    prepare: staged ? undefined : () => (committed ??= commit()),
-  }
-
-  await session.data.session.prompt(admission).catch(() => session.data.session.prompt(admission))
+  })
+  return sending.then(
+    (admitted) => {
+      if (admitted.delivery === "queue") cancel?.()
+      return admitted
+    },
+    (error) => {
+      if (!session.admitted(value.id)) cancel?.()
+      throw error
+    },
+  )
 }
 
 async function buildSubmissionRequest(session: ComposerSession, value: ComposerSubmission) {

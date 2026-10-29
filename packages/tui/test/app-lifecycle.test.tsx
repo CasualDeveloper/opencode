@@ -1389,10 +1389,10 @@ test("ctrl+c dismisses autocomplete and shell mode before exiting", async () => 
 
 test.skipIf(process.platform === "win32").each(["manual", "select"] as const)(
   "selection copy and pane management respect %s mode in the prompt and terminal pane",
-    async (copy) => {
-      await using state = await tmpdir()
-      const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
-      await setup.renderer.setupTerminal()
+  async (copy) => {
+    await using state = await tmpdir()
+    const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
+    await setup.renderer.setupTerminal()
     setup.renderer.start()
     const ready = Promise.withResolvers<void>()
     const session = {
@@ -1987,9 +1987,7 @@ test("free usage limit offers OpenCode Go once per 24h, transitions Subscribe to
   setup.mockInput.pressEnter()
   await setup.waitForFrame((frame) => frame.includes("GOGO-1234"))
   expect(openSpy).toHaveBeenCalledWith("https://opencode.ai/go")
-  expect(oauthRequests).toEqual([
-    { methodID: "device", answer: { server: "https://opencode.ai/console" } },
-  ])
+  expect(oauthRequests).toEqual([{ methodID: "device", answer: { server: "https://opencode.ai/console" } }])
   const connectFrame = setup.captureCharFrame()
   expect(connectFrame).toContain("OpenCode Console account")
   expect(connectFrame).not.toContain("Enter Go API key")
@@ -1997,10 +1995,11 @@ test("free usage limit offers OpenCode Go once per 24h, transitions Subscribe to
   releaseOAuth()
   await promptResent.promise
   await setup.waitForFrame((frame) => !frame.includes("GOGO-1234") && frame.includes("GLM-5 Go"))
-  expect(switchedModels).toEqual([{ model: { providerID: "opencode-go", id: "glm-5-go" } }])
+  expect(switchedModels).toEqual([])
   expect(resentPrompts).toHaveLength(1)
   expect(resentPrompts[0]).toMatchObject({
     text: "Queued follow-up",
+    selection: { agent: "build", model: { providerID: "opencode-go", id: "glm-5-go" } },
   })
 })
 
@@ -2011,7 +2010,7 @@ test("free usage limit Subscribe handles mid-auth/mid-sync Escape, sync failure,
   using _now = spyOn(Date, "now").mockImplementation(() => currentNow)
   using openSpy = spyOn(Open, "openUrl").mockResolvedValue(undefined as never)
   const session = {
-    id: "ses_free_limit_key",
+    id: `ses_free_limit_key_${crypto.randomUUID()}`,
     projectID: "proj_test",
     location: { directory },
     title: "Free limit no Go subscription",
@@ -2278,7 +2277,13 @@ test("free usage limit Subscribe handles mid-auth/mid-sync Escape, sync failure,
     created: 6,
     type: "session.step.started",
     durable: { aggregateID: session.id, seq: 6, version: 1 },
-    data: { sessionID: session.id, assistantMessageID: "msg_free_assistant_expired", agent: "build", model, started: 6 },
+    data: {
+      sessionID: session.id,
+      assistantMessageID: "msg_free_assistant_expired",
+      agent: "build",
+      model,
+      started: 6,
+    },
   })
   setup.events.emit({
     id: "evt_free_limit_expired_fail",
@@ -2354,9 +2359,12 @@ test("free usage limit Subscribe handles mid-auth/mid-sync Escape, sync failure,
   await promptResent.promise
   await setup.waitForFrame((frame) => !frame.includes("Free limit reached") && frame.includes("GLM-5 Go"))
   expect(oauthConnectCalls).toBe(oauthCallsBeforeAlreadyConnected)
-  expect(switchedModels).toEqual([{ model: { providerID: "opencode-go", id: "glm-5-go" } }])
+  expect(switchedModels).toEqual([])
   expect(resentPrompts).toHaveLength(1)
-  expect(resentPrompts[0]).toMatchObject({ text: "Refactor the parser" })
+  expect(resentPrompts[0]).toMatchObject({
+    text: "Refactor the parser",
+    selection: { agent: "build", model: { providerID: "opencode-go", id: "glm-5-go" } },
+  })
 
   // Advance past 24h, trigger again, and choose "don't show again".
   currentNow = baseNow + 6 * 86_400_000
@@ -2625,7 +2633,7 @@ test("Go usage limit restores the prompt and explains the limit with its reset t
 
 test("free usage limit modal manages live animation FPS and adapts to 44x24 and 60x12 terminals", async () => {
   const session = {
-    id: "ses_free_limit_anim",
+    id: `ses_free_limit_anim_${crypto.randomUUID()}`,
     projectID: "proj_test",
     location: { directory },
     title: "Free limit anim",

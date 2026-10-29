@@ -7,127 +7,104 @@ import { useLanguage } from "@/runtime/i18n/language"
 
 import { extractPromptContext, extractPromptFromMessage } from "@/composer/prompt"
 import { pinPromptMedia } from "@/composer/media"
+import type { Prompt } from "@/composer/state"
 import { clonePrompt, promptLength } from "@/composer/prompt-parts"
 import { showToast } from "@/shell/notifications/toast"
 import type { SessionModel } from "./model"
+import { loadUndoTarget, selectSessionUserMessages } from "./session-domain"
 
 export function createSessionRevert(input: {
   session: SessionModel
   setActiveMessage: (message: SessionMessageUser | undefined) => void
 }) {
   const prompt = useComposerState()
-  const server = useServerSDK()
   const data = useData()
+  const server = useServerSDK()
   const location = useWorkspaceLocation()
   const language = useLanguage()
-
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a rejected request is opaque; the toast formats it
-  const fail = (error: unknown) =>
-    showToast({
-      title: language.t("common.requestFailed"),
-      description: error instanceof Error ? error.message : String(error),
-    })
 
   const request = async <A>(action: () => Promise<A>) =>
     action()
       .then(() => true)
       .catch((error) => {
-        fail(error)
+        showToast({
+          title: language.t("common.requestFailed"),
+          description: error instanceof Error ? error.message : String(error),
+        })
 
         return false
       })
 
-  const messageDraft = (message: SessionMessageUser) =>
-    extractPromptFromMessage(message, {
+  const capture = () => {
+    const sessionID = input.session.identity.params.id
+    if (!sessionID) return
+    const messages = data.session.message.capture(sessionID)
+    return {
+      sessionID,
+      owner: input.session.ownership.capture(),
+      target: prompt.capture(),
       directory: location().directory,
+      messages: () => selectSessionUserMessages(messages()),
+    }
+  }
+
+  const messageDraft = (operation: NonNullable<ReturnType<typeof capture>>, message: SessionMessageUser) =>
+    extractPromptFromMessage(message, {
+      directory: operation.directory,
       attachmentName: language.t("common.attachment"),
       sessionTitle: (id) => data.session.get(id)?.title,
     })
-
   const restore = (
-    target: ReturnType<typeof prompt.capture>,
+    operation: NonNullable<ReturnType<typeof capture>>,
     message: SessionMessageUser,
-    restored = messageDraft(message),
+    restored = messageDraft(operation, message),
   ) => {
-    const context = extractPromptContext(message, { directory: location().directory })
+    const context = extractPromptContext(message, { directory: operation.directory })
 
-    target.set(restored, promptLength(restored))
+    operation.target.set(restored, promptLength(restored))
     // The restored prompt replaces the draft, so chips from an earlier restore do not ride along.
-    target.context.replace([...context.comments, ...context.files])
+    operation.target.context.replace([...context.comments, ...context.files])
   }
 
-  const stage = async (message: SessionMessageUser, previous: SessionMessageUser | undefined) => {
-    const sessionID = input.session.identity.params.id
-
-    if (!sessionID) return
-    const owner = input.session.ownership.capture()
-    const target = prompt.capture()
-
-    // An undelivered prompt has no history to rewind. Withdraw it like the TUI
-    // instead of interrupting the work it is waiting behind.
-    if (data.session.input.has(sessionID, message.id)) {
-      // The cancel releases the prompt's blob refs and sweeps blobs nothing else references, so the draft takes
-      // local copies of its media first; if they cannot load, the prompt stays queued.
-      const restored = await pinPromptMedia(messageDraft(message)).catch((error) => {
-        fail(error)
-
-        return undefined
-      })
-
-      if (!restored) return
-
-      if (!(await request(() => server.api.session.inbox.cancel({ sessionID, inboxID: message.id })))) return
-      restore(target, message, restored)
-      owner.run(() => input.setActiveMessage(previous))
-
-      return
-    }
-
-    // Interrupt acknowledges before the execution settles, and staging a busy Session fails. The
-    // local status can lag the server either way, so always settle first; both are idle no-ops.
-    // Like the TUI, stop at the first failure instead of waiting on work that was never interrupted.
-    if (!(await request(() => server.api.session.interrupt({ sessionID })))) return
-
-    if (!(await request(() => server.api.experimental.session.wait({ sessionID })))) return
-
-    // Read before staging: the staged event can land before the request resolves.
-    const prior = input.session.data.revertMessageID()
-
-    if (!(await request(() => server.api.session.revert.stage({ sessionID, messageID: message.id })))) return
-
+  const restoreUndo = (
+    operation: NonNullable<ReturnType<typeof capture>>,
+    message: SessionMessageUser,
+    previous: SessionMessageUser | undefined,
+    prior: string | undefined,
+    outcome: "withdrawn" | "reverted",
+    restored: Prompt,
+  ) => {
     const draft = {
-      prompt: clonePrompt(target.current()),
-      cursor: target.cursor(),
-      context: target.context.items().map((item) => ({ ...item })),
+      prompt: clonePrompt(operation.target.current()),
+      cursor: operation.target.cursor(),
+      context: operation.target.context.items().map((item) => ({ ...item })),
     }
+    restore(operation, message, restored)
+    operation.owner.run(() => input.setActiveMessage(previous))
+    if (outcome !== "reverted") return
 
-    // Like the TUI, pending inputs are left alone: the revert hides them, committing it drops them,
-    // and redo delivers them.
-    restore(target, message)
-    owner.run(() => input.setActiveMessage(previous))
-
-    // Rewinding also puts the files back, so offer the way out right where it happened. Undo is bound to
-    // this Session and its earlier revert, not to whatever the route and the event stream show when clicked.
-    const undoRewind = async () => {
-      const undone = prior
-        ? request(() => server.api.session.revert.stage({ sessionID, messageID: prior }))
-        : request(() => server.api.session.revert.clear({ sessionID }))
-
-      if (!(await undone)) return
-      target.set(draft.prompt, draft.cursor ?? promptLength(draft.prompt))
-      target.context.replace(draft.context)
-      owner.run(() => {
-        const messages = input.session.history.userMessages()
-        const boundary = prior ? messages.findIndex((item) => item.id === prior) : -1
-
-        input.setActiveMessage(
-          boundary >= 0
-            ? messages[boundary - 1]
-            : messages.filter((item) => !data.session.input.has(sessionID, item.id)).at(-1),
-        )
-      })
-    }
-
+    const undoRewind = () =>
+      request(() =>
+        data.session.mutate(operation.sessionID, async (reservation) => {
+          if (prior) await reservation.undo(prior)
+          if (!prior) {
+            await server.api.session.revert.clear({ sessionID: operation.sessionID })
+            const current = data.session.get(operation.sessionID)
+            if (current) data.session.remember({ ...current, revert: undefined })
+          }
+          operation.target.set(draft.prompt, draft.cursor ?? promptLength(draft.prompt))
+          operation.target.context.replace(draft.context)
+          operation.owner.run(() => {
+            const messages = operation.messages()
+            const boundary = prior ? messages.findIndex((item) => item.id === prior) : -1
+            input.setActiveMessage(
+              boundary >= 0
+                ? messages[boundary - 1]
+                : messages.filter((item) => !data.session.input.has(operation.sessionID, item.id)).at(-1),
+            )
+          })
+        }),
+      )
     showToast({
       title: language.t("session.rewind.toast.title"),
       actions: [{ label: language.t("session.rewind.toast.undo"), onClick: () => void undoRewind() }],
@@ -135,46 +112,66 @@ export function createSessionRevert(input: {
   }
 
   const to = async (messageID: string) => {
-    const messages = input.session.history.userMessages()
-    const index = messages.findIndex((message) => message.id === messageID)
-    const message = messages[index]
-
-    if (!message) return
-    await stage(message, messages[index - 1])
+    const operation = capture()
+    if (!operation) return
+    await request(() =>
+      data.session.mutate(operation.sessionID, async (reservation) => {
+        const messages = operation.messages()
+        const index = messages.findIndex((message) => message.id === messageID)
+        const message = messages[index]
+        if (!message) return
+        const prior = (await server.api.session.get({ sessionID: operation.sessionID })).revert?.messageID
+        const restored = await pinPromptMedia(messageDraft(operation, message))
+        const outcome = await reservation.undo(message.id)
+        restoreUndo(operation, message, messages[index - 1], prior, outcome, restored)
+      }),
+    )
   }
 
   const undo = async () => {
-    const messages = input.session.history.userMessages()
-    const reverted = input.session.data.revertMessageID()
-    const boundary = reverted ? messages.findIndex((message) => message.id === reverted) : messages.length
-
-    if (boundary <= 0) return
-    const message = messages[boundary - 1]
-
-    if (message) await stage(message, messages[boundary - 2])
+    const operation = capture()
+    if (!operation) return
+    await request(() =>
+      data.session.mutate(operation.sessionID, async (reservation) => {
+        const reverted = (await server.api.session.get({ sessionID: operation.sessionID })).revert?.messageID
+        const messages = operation.messages()
+        const target = reverted
+          ? await loadUndoTarget({
+              messageID: reverted,
+              messages: operation.messages,
+              more: () => data.session.message.more(operation.sessionID),
+              loadMore: () => data.session.message.loadMore(operation.sessionID),
+            })
+          : { message: messages.at(-1), previous: messages.at(-2) }
+        if (!target?.message) return
+        const restored = await pinPromptMedia(messageDraft(operation, target.message))
+        const outcome = await reservation.undo(target.message.id)
+        restoreUndo(operation, target.message, target.previous, reverted, outcome, restored)
+      }),
+    )
   }
 
   const redo = async () => {
-    const sessionID = input.session.identity.params.id
-    const reverted = input.session.data.revertMessageID()
-
-    if (!sessionID || !reverted) return
-    const owner = input.session.ownership.capture()
+    const operation = capture()
+    if (!operation) return
 
     // Like the TUI, redo restores every reverted message at once and leaves the composer alone.
-    if (!(await request(() => server.api.session.revert.clear({ sessionID })))) return
-    owner.run(() =>
+    if (!(await request(() => data.session.revert.clear({ sessionID: operation.sessionID })))) return
+    operation.owner.run(() =>
       input.setActiveMessage(
-        input.session.history
-          .userMessages()
-          .filter((message) => !data.session.input.has(sessionID, message.id))
+        operation
+          .messages()
+          .filter((message) => !data.session.input.has(operation.sessionID, message.id))
           .at(-1),
       ),
     )
   }
 
   /** Puts a sent prompt back in the composer without rewinding the Session. */
-  const recall = (message: SessionMessageUser) => restore(prompt.capture(), message)
+  const recall = (message: SessionMessageUser) => {
+    const operation = capture()
+    if (operation) restore(operation, message)
+  }
 
   return { to, undo, redo, recall }
 }

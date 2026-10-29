@@ -3284,6 +3284,22 @@ export type SessionPromptInput = {
         readonly mention?: { readonly start: number; readonly end: number; readonly text: string }
       }>
     | undefined
+  readonly context?:
+    | {
+        readonly id: string
+        readonly text: string
+        readonly description?: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
+      }
+    | null
+    | undefined
+  readonly selection?:
+    | {
+        readonly agent: string
+        readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
+      }
+    | null
+    | undefined
   readonly metadata?: { readonly [x: string]: JsonValue } | undefined
   readonly delivery?: ("steer" | "queue") | null | undefined
   readonly resume?: boolean | null | undefined

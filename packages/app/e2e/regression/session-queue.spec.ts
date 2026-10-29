@@ -14,6 +14,7 @@ const sessionID = "ses_session_queue_regression"
 const PromptBody = Schema.Struct({
   id: SessionMessage.ID.pipe(Schema.optional),
   ...PromptInput.Prompt.fields,
+  selection: PromptInput.Selection.pipe(Schema.optional),
   metadata: SessionInbox.UserPayload.fields.metadata,
   delivery: SessionInbox.Delivery.pipe(Schema.optional),
   resume: Schema.Boolean.pipe(Schema.optional),
@@ -98,6 +99,7 @@ function createQueueMock(seed: string[], messages: SessionMessageInfo[] = []) {
       const body = decodePromptBody(input.body)
       prompts.push(body)
       log.push(`prompt:${body.delivery ?? "steer"}`)
+      if (rows.some((row) => row.id === body.id)) return
 
       const row: InboxRow = {
         id: body.id ?? `inb_mock_${sequence}`,
@@ -231,9 +233,7 @@ test("follow-up preference controls Enter while Mod+Enter uses the alternate del
   await expect(view.input).toHaveText("")
 })
 
-test("a steer shows as pending in the timeline as the composer clears, before the server admits it", async ({
-  page,
-}) => {
+test("a steer shows as pending in the timeline as the composer clears, before admission settles", async ({ page }) => {
   // The running execution has delivered input, so a new steer waits behind its work.
   const mock = createQueueMock(
     [],
@@ -457,7 +457,7 @@ for (const change of ["reorder", "edit"] as const) {
 
     // The replacements admitted before the failure are withdrawn; the originals stay in place.
     await expect.poll(() => mock.log.includes(`cancel:${mock.prompts.at(-1)?.id}`)).toBe(true)
-    await expect.poll(() => mock.changes.length).toBe(mock.prompts.length)
+    await expect.poll(() => mock.changes.length).toBe(new Set(mock.prompts.map((prompt) => prompt.id)).size)
     expect(mock.changes.every((entry) => entry.action === "cancel" && !entry.inboxID.startsWith("inb_seed_"))).toBe(
       true,
     )
@@ -719,6 +719,19 @@ test("Undo cancels only the selected queued prompt and focuses the restored inpu
   await expect(view.input).toBeFocused()
   expect(mock.changes).toEqual([{ inboxID: "inb_seed_2", action: "cancel" }])
   expect(mock.prompts).toEqual([])
+})
+
+test("Undo does not restore a queued prompt whose delivery won cancellation", async ({ page }) => {
+  const mock = createQueueMock(["already delivered"])
+  const view = await openQueue(page, mock)
+  await expect(view.rows).toHaveCount(1)
+  await view.input.fill("keep this draft")
+  const item = mock.rows[0]
+  mock.rows.splice(0)
+  mock.messages.push({ id: item.id, type: "user", text: item.payload.text, time: item.time })
+  await view.rows.getByRole("button", { name: "Undo", exact: true }).click()
+  await expect(page.getByText("Prompt was already sent. Use Undo to take it back", { exact: true })).toBeVisible()
+  await expect(view.input).toHaveText("keep this draft")
 })
 
 test("Undo appends to an existing draft and restores inline attachments", async ({ page }) => {

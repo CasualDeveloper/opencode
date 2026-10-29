@@ -276,11 +276,13 @@ export function createActiveSessionRegion(input: {
   const pendingSteer: TimelinePendingActions = {
     status: (sessionID, messageID) => data.session.pending.status(sessionID, messageID),
     queue: ({ sessionID, messageID }) =>
-      server.api.session.inbox
-        .update({ sessionID, inboxID: messageID, delivery: "queue" })
+      data.session
+        .mutate(sessionID, () => server.api.session.inbox.update({ sessionID, inboxID: messageID, delivery: "queue" }))
         .then(() => undefined, notifyFailed),
     remove: ({ sessionID, messageID }) =>
-      server.api.session.inbox.cancel({ sessionID, inboxID: messageID }).then(() => undefined, notifyFailed),
+      data.session
+        .mutate(sessionID, () => server.api.session.inbox.cancel({ sessionID, inboxID: messageID }))
+        .then(() => undefined, notifyFailed),
   }
 
   useComposerCommands()

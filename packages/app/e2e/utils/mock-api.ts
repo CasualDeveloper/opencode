@@ -45,6 +45,12 @@ const PtyParams = { ptyID: Pty.ID }
 
 const NoContent = HttpApiSchema.NoContent
 
+export class MockMessageNotFound extends Schema.TaggedError<MockMessageNotFound>()("MessageNotFoundError", {
+  sessionID: Schema.String,
+  messageID: Schema.String,
+  message: Schema.String,
+}) {}
+
 export class MockNotFound extends Schema.TaggedError<MockNotFound>()("MockNotFound", {
   message: Schema.String,
 }) {}
@@ -471,7 +477,7 @@ const Group = HttpApiGroup.make("mock")
     HttpApiEndpoint.get("messageGet", "/api/session/:sessionID/message/:messageID", {
       params: { ...SessionParams, messageID: Schema.String },
       success: Json,
-      error: MockNotFound.pipe(HttpApiSchema.status(404)),
+      error: MockMessageNotFound.pipe(HttpApiSchema.status(404)),
     }),
   )
   .add(
