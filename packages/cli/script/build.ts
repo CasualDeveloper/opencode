@@ -25,12 +25,14 @@ const outdir = path.resolve(
 if (outdir === dir) throw new Error("--outdir must not be the package directory")
 process.chdir(dir)
 
-await rm(outdir, { recursive: true, force: true })
-
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const requestedTarget = process.env.OPENCODE_TARGET
-const skipInstall = process.argv.includes("--skip-install")
+const localFlag = process.argv.includes("--local")
+if (localFlag && (process.platform !== "darwin" || process.arch !== "arm64")) {
+  throw new Error("--local requires macOS arm64")
+}
+const skipInstall = process.argv.includes("--skip-install") || localFlag
 const skipWebUi = process.argv.includes("--skip-web-ui")
 const solidPlugin = createSolidTransformPlugin()
 const highlights = Script.preview ? undefined : embed(process.env.OPENCODE_RELEASE_NOTES)
@@ -60,7 +62,7 @@ const allTargets: {
 const targets =
   requestedTarget !== undefined
     ? allTargets.filter((item) => targetName(item) === `${binary}-${requestedTarget}`)
-    : singleFlag
+    : singleFlag || localFlag
       ? allTargets.filter((item) => {
           if (item.os !== process.platform || item.arch !== process.arch) return false
           if (item.avx2 === false) return baselineFlag
@@ -68,6 +70,11 @@ const targets =
         })
       : allTargets
 if (!targets.length) throw new Error(`Unknown build target: ${requestedTarget}`)
+if (localFlag && (targets.length !== 1 || targets[0].os !== "darwin" || targets[0].arch !== "arm64")) {
+  throw new Error(`--local requires the ${binary}-darwin-arm64 target`)
+}
+
+await rm(outdir, { recursive: true, force: true })
 
 // Bun 1.4.4 skips native packages for the other libc by default, but the musl targets need them.
 if (!skipInstall)
@@ -156,6 +163,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
   const target = targetName(item)
   const name = target.replace(binary, "cli")
   const executablePath = await compileExecutable(item)
+  const binaryPath = path.join(outdir, name, "bin", binary)
   console.log(`building ${name}`)
   const result = await Bun.build({
     entrypoints: ["./src/index.ts", "./src/photon-worker.ts"],
@@ -182,7 +190,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       autoloadPackageJson: true,
       target: target.replace(binary, "bun") as Bun.Build.CompileTarget,
       ...(executablePath ? { executablePath } : {}),
-      outfile: path.join(outdir, name, "bin", binary),
+      outfile: binaryPath,
       execArgv: [
         "--smol",
         `--user-agent=opencode/${Script.channel}/${Script.version}/cli`,
@@ -211,6 +219,10 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
   }
   verifySimulationGraph(simulationInputs)
   await NativeArch.verify(path.join(outdir, name, "bin", item.os === "win32" ? `${binary}.exe` : binary), item.arch)
+
+  if (localFlag) {
+    await $`codesign --verify --strict ${binaryPath}`
+  }
 
   await Bun.write(
     path.join(outdir, name, "package.json"),

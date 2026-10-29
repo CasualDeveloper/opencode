@@ -18,6 +18,7 @@
   },
   "scripts": {
     "build": "bun run script/build.ts",
+    "build:local": "bun run script/build.ts --local",
     "build:node": "bun run script/build-node.ts",
     "pack": "bun run script/pack.ts",
     "pack:docker": "chmod +x dist/cli-linux-*-musl/bin/opencode && mkdir -p ../../dist/docker && docker buildx build --platform linux/amd64,linux/arm64 --output type=oci,dest=../../dist/docker/opencode-image.tar .",
