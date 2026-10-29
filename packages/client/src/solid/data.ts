@@ -167,7 +167,7 @@ function optimisticFiles(files: SessionPromptInput["files"]) {
     const item: NonNullable<Extract<SessionInboxInfo, { type: "user" }>["payload"]["files"]>[number] = {
       data: file.uri.slice(comma + 1),
       mime: parts[0] || "application/octet-stream",
-      source: { type: "inline" },
+      source: file.source ?? { type: "inline" },
     }
     if (file.name !== undefined) item.name = file.name
     if (file.description !== undefined) item.description = file.description
