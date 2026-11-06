@@ -166,6 +166,42 @@ const transcript = {
   cursor: {},
 }
 
+test.each([false, true])(
+  "confirmed withdrawal reconciles before its cancellation echo (echo first: %s)",
+  async (echoFirst) => {
+    const cancelled: OpenCodeEvent = {
+      id: "evt_cancelled",
+      type: "session.inbox.cancelled",
+      created: 2,
+      durable: { aggregateID: item.sessionID, seq: 2, version: 1 },
+      data: { sessionID: item.sessionID, inboxID: item.id },
+    }
+    const setup = fixture(async (request) => {
+      if (request.method === "DELETE") {
+        if (echoFirst) setup.emit(cancelled)
+        return new Response(null, { status: 204 })
+      }
+      return Response.json(
+        { _tag: "MessageNotFoundError", sessionID: item.sessionID, messageID: item.id },
+        { status: 404 },
+      )
+    })
+    try {
+      setup.emit(enqueued)
+      expect(await setup.data.session.input.withdraw({ sessionID: item.sessionID, inboxID: item.id })).toBe("withdrawn")
+      expect(setup.data.session.input.has(item.sessionID, item.id)).toBe(false)
+      expect(setup.data.session.message.list(item.sessionID)).toEqual([])
+      if (!echoFirst) {
+        setup.emit(enqueued)
+        expect(setup.data.session.message.list(item.sessionID)).toEqual([])
+        setup.emit(cancelled)
+      }
+    } finally {
+      setup.dispose()
+    }
+  },
+)
+
 test("a transcript read clears a prompt whose delivery event was missed", async () => {
   const setup = fixture(async (request) =>
     new URL(request.url).pathname.endsWith("/message") ? Response.json(transcript) : Response.json({ data: [] }),
