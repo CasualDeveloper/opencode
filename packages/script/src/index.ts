@@ -20,6 +20,7 @@ if (!semver.satisfies(process.versions.bun, expectedBunVersionRange)) {
 const env = {
   OPENCODE_CHANNEL: process.env["OPENCODE_CHANNEL"],
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
+  OPENCODE_BASE_SHA: process.env["OPENCODE_BASE_SHA"],
 }
 const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
@@ -33,9 +34,15 @@ const CHANNEL = await (async () => {
 const IS_PREVIEW = CHANNEL !== "latest"
 
 // The release workflow's plan job owns release versions; builds only read them.
-const VERSION = (() => {
+const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
   if (!IS_PREVIEW) throw new Error("OPENCODE_VERSION is required for latest-channel builds")
+  if (CHANNEL === "casual") {
+    const base = env.OPENCODE_BASE_SHA
+      ? env.OPENCODE_BASE_SHA
+      : await $`git merge-base origin/dev HEAD`.text().then((x) => x.trim())
+    return `0.0.0-${CHANNEL}-${base.slice(0, 10)}-${previewBuildNumber()}`
+  }
   return `0.0.0-${CHANNEL}-${previewBuildNumber()}`
 })()
 
