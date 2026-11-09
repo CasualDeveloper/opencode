@@ -504,7 +504,7 @@ test("a catalog refresh cannot replace an existing session's model", async ({ pa
     name: "CatalogSelection",
     sessions: [{ id: sessionID, agent: "build", model: { id: "alpha", providerID: "opencode", variant: "high" } }],
     provider: () => catalog.current,
-    onPrompt: (input) => void prompts.push(input.body),
+    onPrompt: (input) => void prompts.push({ text: input.body.text, selection: input.body.selection }),
     seed: { storage: { "opencode.global.dat:model": { recent: [{ providerID: "opencode", modelID: "beta" }] } } },
   })
 
@@ -543,7 +543,12 @@ test("a catalog refresh cannot replace an existing session's model", async ({ pa
   await expect(page.getByRole("button", { name: "Choose model variant", exact: true })).toHaveText("high")
   await view.editor.press("Enter")
   await expect.poll(() => prompts.length).toBe(1)
-  // The session already runs Alpha high, so the send has no switch to make.
+  expect(prompts).toEqual([
+    {
+      text: "Keep my selected model",
+      selection: { agent: "build", model: { id: "alpha", providerID: "opencode", variant: "high" } },
+    },
+  ])
   expect(switches).toEqual([])
 
   catalog.current = provider(beta)
@@ -566,7 +571,17 @@ test("a catalog refresh cannot replace an existing session's model", async ({ pa
   await view.editor.fill("Use the replacement I chose")
   await view.editor.press("Enter")
   await expect.poll(() => prompts.length).toBe(2)
-  expect(switches).toEqual([{ model: { id: "beta", providerID: "opencode" } }])
+  expect(prompts).toEqual([
+    {
+      text: "Keep my selected model",
+      selection: { agent: "build", model: { id: "alpha", providerID: "opencode", variant: "high" } },
+    },
+    {
+      text: "Use the replacement I chose",
+      selection: { agent: "build", model: { id: "beta", providerID: "opencode" } },
+    },
+  ])
+  expect(switches).toEqual([])
 })
 
 test("an existing session's model never shows a fallback while its agent loads", async ({ page }) => {

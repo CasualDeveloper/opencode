@@ -189,6 +189,11 @@ test("optimistic prompt admission preserves inline data attachments before the s
       text: "Inspect this screenshot",
       files: [
         { uri: "data:image/png;base64,YQ==", name: "shot.png" },
+        {
+          uri: "data:image/png;base64,Yg==",
+          source: { type: "uri", uri: "file:///project/captured.png" },
+          name: "captured.png",
+        },
         { uri: "file:///project/README.md", name: "README.md" },
       ],
       gate: gate.promise,
@@ -200,6 +205,12 @@ test("optimistic prompt admission preserves inline data attachments before the s
         mime: "image/png",
         source: { type: "inline" as const },
         name: "shot.png",
+      },
+      {
+        data: "Yg==",
+        mime: "image/png",
+        source: { type: "uri" as const, uri: "file:///project/captured.png" },
+        name: "captured.png",
       },
     ]
 

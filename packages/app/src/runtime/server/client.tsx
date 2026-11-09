@@ -86,7 +86,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   const transport = createServerTransport({ http: ServerConnection.http(server) ?? unready, fetch: platform.fetch })
   const media = createMediaCache(() => transport.api)
   const serverKey = ServerConnection.key(server)
-  setMediaBlobLoader(serverKey, (uri) => media.load(uri))
+  setMediaBlobLoader(serverKey, (uri, signal) => media.load(uri, undefined, signal))
   onCleanup(() => {
     setMediaBlobLoader(serverKey, undefined)
     media.dispose()

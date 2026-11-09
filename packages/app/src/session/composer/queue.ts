@@ -205,76 +205,95 @@ export function createSessionQueue(input: {
 
   // Runs the operation in flight and reports its progress. Each report carries the operation's attempt, so the machine
   // ignores one that arrives after the operation stopped being current.
-  const run = async (operation: ActiveOperation, progress: MutationProgress) => {
-    const attempt = operation.attempt
+  const run = (operation: ActiveOperation, progress: MutationProgress) =>
+    data.session.mutate(input.sessionID, async (reservation) => {
+      const attempt = operation.attempt
 
-    // SSE retracts and updates materialized timeline messages for a steer or removal, so neither re-syncs the queue.
-    if (operation.type === "steer") {
-      const background = input.background()
+      // SSE retracts and updates materialized timeline messages for a steer or removal, so neither re-syncs the queue.
+      if (operation.type === "steer") {
+        const background = input.background()
 
-      return server.api.session.inbox
-        .update({ sessionID: input.sessionID, inboxID: operation.id, delivery: "steer" })
-        .then(
-          () => {
-            void background?.move()
-            dispatch({ type: "mutation.succeeded", attempt })
-          },
+        return server.api.session.inbox
+          .update({ sessionID: input.sessionID, inboxID: operation.id, delivery: "steer" })
+          .then(
+            () => {
+              void background?.move()
+              dispatch({ type: "mutation.succeeded", attempt })
+            },
+            () => dispatch({ type: "mutation.failed", attempt, hidden: [] }),
+          )
+      }
+
+      if (operation.type === "remove")
+        return server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: operation.id }).then(
+          () => dispatch({ type: "mutation.succeeded", attempt }),
           () => dispatch({ type: "mutation.failed", attempt, hidden: [] }),
         )
-    }
 
-    if (operation.type === "remove")
-      return server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: operation.id }).then(
-        () => dispatch({ type: "mutation.succeeded", attempt }),
-        () => dispatch({ type: "mutation.failed", attempt, hidden: [] }),
+      if (operation.type === "undo") {
+        const source = { id: operation.item.id, ...operation.item.payload }
+        const context = extractPromptContext(source, { directory: location().directory })
+
+        await undoQueuedPrompt({
+          prompt: extractPromptFromMessage(source, {
+            directory: location().directory,
+            attachmentName: language.t("common.attachment"),
+            sessionTitle: (id) => data.session.get(id)?.title,
+          }),
+          signal: progress.controller.signal,
+          cancelInboxItem: () => {
+            progress.stage = "committed"
+            return reservation.withdraw(operation.item.id)
+          },
+        }).then(
+          (result) =>
+            dispatch(
+              result.outcome === "delivered"
+                ? { type: "mutation.delivered", attempt }
+                : {
+                    type: "mutation.undone",
+                    attempt,
+                    prompt: result.prompt,
+                    context: [...context.comments, ...context.files],
+                  },
+            ),
+          () => dispatch({ type: "mutation.failed", attempt, hidden: [] }),
+        )
+        await data.session.pending.sync(input.sessionID).catch(() => undefined)
+
+        return
+      }
+
+      const settled = await (async () => {
+        progress.controller.signal.throwIfAborted()
+        if ((await server.api.session.get({ sessionID: input.sessionID })).revert)
+          throw new Error("Cannot rewrite a queue while a revert is staged")
+        progress.controller.signal.throwIfAborted()
+        return operation.type === "reorder"
+          ? rewrite(attempt, progress, [...operation.inboxIDs], reservation.prompt)
+          : sendEdit(operation, progress, reservation.prompt)
+      })().then(
+        () => true,
+        () => false,
       )
 
-    if (operation.type === "undo") {
-      const source = { id: operation.item.id, ...operation.item.payload }
-      const context = extractPromptContext(source, { directory: location().directory })
-
-      await undoQueuedPrompt({
-        prompt: extractPromptFromMessage(source, {
-          directory: location().directory,
-          attachmentName: language.t("common.attachment"),
-          sessionTitle: (id) => data.session.get(id)?.title,
-        }),
-        signal: progress.controller.signal,
-        cancelInboxItem: () => {
-          progress.stage = "committed"
-
-          return server.api.session.inbox.cancel({ sessionID: input.sessionID, inboxID: operation.item.id })
-        },
-      }).then(
-        (prompt) =>
-          dispatch({ type: "mutation.undone", attempt, prompt, context: [...context.comments, ...context.files] }),
-        () => dispatch({ type: "mutation.failed", attempt, hidden: [] }),
-      )
+      if (settled) progress.stage = "settled"
+      if (operation.type === "reorder") data.session.pending.invalidate(input.sessionID)
+      // The rows keep their optimistic state until the server's queue has caught up.
       await data.session.pending.sync(input.sessionID).catch(() => undefined)
+      dispatch(
+        settled
+          ? { type: "mutation.succeeded", attempt }
+          : { type: "mutation.failed", attempt, hidden: progress.hidden },
+      )
+    })
 
-      return
-    }
-
-    const settled = await (
-      operation.type === "reorder" ? rewrite(attempt, progress, [...operation.inboxIDs]) : sendEdit(operation, progress)
-    ).then(
-      () => true,
-      () => false,
-    )
-
-    if (settled) progress.stage = "settled"
-
-    if (operation.type === "reorder") data.session.pending.invalidate(input.sessionID)
-    // The rows keep their optimistic state until the server's queue has caught up.
-    await data.session.pending.sync(input.sessionID).catch(() => undefined)
-    dispatch(
-      settled ? { type: "mutation.succeeded", attempt } : { type: "mutation.failed", attempt, hidden: progress.hidden },
-    )
-  }
-
-  const sendEdit = async (operation: EditOperation & { attempt: number }, progress: MutationProgress) => {
+  const sendEdit = async (
+    operation: EditOperation & { attempt: number },
+    progress: MutationProgress,
+    admit: typeof data.session.prompt,
+  ) => {
     const signal = progress.controller.signal
-
     const replacement = await editedPromptInput(
       input.sessionID,
       location().directory,
@@ -288,7 +307,7 @@ export function createSessionQueue(input: {
     const admission = { ...replacement, id: operation.moved[operation.original], delivery: operation.delivery }
 
     if (operation.delivery === "queue")
-      return rewrite(operation.attempt, progress, undefined, {
+      return rewrite(operation.attempt, progress, undefined, admit, {
         original: operation.original,
         admission: { ...admission, resume: false },
         moved: operation.moved,
@@ -305,7 +324,7 @@ export function createSessionQueue(input: {
     // A steered replacement can be delivered before a withdrawal reaches it, so the bound waits for the admission and
     // the edit returns to the composer only if it really did not go out.
     progress.stage = "committed"
-    await data.session.prompt(admission)
+    await admit(admission)
     void background?.move()
     dispatch({ type: "mutation.admitted", attempt: operation.attempt })
     // Cancelling is a no-op once the original is gone, so one retry is safe.
@@ -319,6 +338,7 @@ export function createSessionQueue(input: {
     attempt: number,
     progress: MutationProgress,
     inboxIDs: string[] | undefined,
+    admit: typeof data.session.prompt,
     replace?: {
       original: string
       admission: Parameters<typeof data.session.prompt>[0]
@@ -396,7 +416,7 @@ export function createSessionQueue(input: {
 
       await stopped()
       replacements.push(id)
-      await data.session.prompt({ ...admission, id }).catch(async (error) => {
+      await admit({ ...admission, id }).catch(async (error) => {
         await withdraw()
         throw error
       })
@@ -498,12 +518,12 @@ export async function undoQueuedPrompt<A>(input: {
   prompt: Prompt
   signal?: AbortSignal
   cancelInboxItem: () => Promise<A>
-}): Promise<Prompt> {
-  const pinned = await pinPromptMedia(input.prompt)
+}) {
+  const pinned = await pinPromptMedia(input.prompt, input.signal)
   input.signal?.throwIfAborted()
-  await input.cancelInboxItem()
+  const outcome = await input.cancelInboxItem()
 
-  return pinned
+  return { prompt: pinned, outcome }
 }
 
 // A stored file re-admits by the URI it came from, as the TUI does, so a file:// reference keeps its

@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test"
+import { InputRenderable, TextareaRenderable } from "@opentui/core"
 import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
 import { takeDraft } from "../src/component/prompt/draft-stash"
 import type { PromptInfo } from "../src/prompt/history"
 import { copyPlugin } from "./fixture/fixture"
-import { waitForHighlightedFrame } from "./fixture/frame"
 
 const hash = "e".repeat(64)
 const png = Buffer.from(
@@ -107,6 +107,16 @@ async function openSession(server: { inbox?: unknown[]; plugins?: string[]; resp
       if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
       if (info && (rest === "" || rest === "/interrupt")) return json({ data: info })
       if (info && rest === "/inbox") return json({ data: id === session.id ? (server.inbox ?? []) : [] })
+      if (info && rest?.startsWith("/message/")) {
+        const messageID = decodeURIComponent(rest.slice("/message/".length))
+        const message = (id === session.id ? messages : forkedMessages).find((item) => item.id === messageID)
+        return message
+          ? json({ data: message })
+          : json(
+              { _tag: "MessageNotFoundError", sessionID: id, messageID, message: "Message not found" },
+              { status: 404 },
+            )
+      }
       if (info && rest === "/permission") return json({ data: [] })
       if (info && rest === "/wait") return new Response(null, { status: 204 })
       const respond = logged[key]
@@ -118,7 +128,14 @@ async function openSession(server: { inbox?: unknown[]; plugins?: string[]; resp
       return response
     },
   })
-  await waitForHighlightedFrame(setup, (frame) => frame.includes("Looked at it"))
+  await setup.ready
+  // Undo needs the user row and its composer; unrelated Markdown highlighting is not a readiness signal.
+  await setup.waitForFrame(
+    (frame) =>
+      frame.includes("What is in [Image 1]") &&
+      !!setup.renderer.root.findDescendantById("msg_shot") &&
+      setup.renderer.currentFocusedEditor instanceof TextareaRenderable,
+  )
   return Object.assign(setup, { calls, capabilities })
 }
 
@@ -143,7 +160,9 @@ async function messageAction(app: App, action: string) {
   app.mockInput.pressEnter()
   await app.waitForFrame((frame) => frame.includes("Jump to message") || frame.includes("Timeline"))
   app.mockInput.pressEnter()
-  await app.waitForFrame((frame) => frame.includes(action))
+  await app.waitForFrame(
+    (frame) => frame.includes(action) && app.renderer.currentFocusedRenderable instanceof InputRenderable,
+  )
   await app.mockInput.typeText(action)
   app.mockInput.pressEnter()
 }
@@ -159,6 +178,7 @@ async function settled(app: App, done: (frame: string) => boolean) {
 // How many times the frame shows the prompt: once in the transcript, twice once it is also back in the composer.
 const shown = (frame: string) => frame.split("What is in [Image 1]").length - 1
 
+// The first fixture pays for importing the full TUI; use the package's 30s budget.
 test("reads transcripts with media refs and loads a ref's bytes before /undo rewinds its message", async () => {
   await using app = await openSession({})
   expect([...app.capabilities.values()]).toEqual(["experimental-media-uri"])
@@ -168,7 +188,7 @@ test("reads transcripts with media refs and loads a ref's bytes before /undo rew
   await undoLast(app)
   await app.waitForFrame((frame) => shown(frame) === 2)
   expect(app.calls).toEqual([`${MEDIA} 200`, `${REVERT} 200`])
-}, 20000)
+}, 30000)
 
 // Starts an undo, leaves the session while its media read waits, then lets the read finish.
 async function undoAfterLeaving(input: { inbox: unknown[]; undo: (app: App) => Promise<void> }) {
@@ -178,7 +198,7 @@ async function undoAfterLeaving(input: { inbox: unknown[]; undo: (app: App) => P
   await app.waitForFrame(() => app.calls.length > 0)
   await app.mockInput.typeText("/new")
   app.mockInput.pressEnter()
-  await app.waitForFrame((frame) => !frame.includes("Looked at it"))
+  await app.waitForFrame(() => !app.renderer.root.findDescendantById("msg_shot"))
   media.resolve()
   // The rewind's request is logged on arrival, but the draft is written only once its response is back.
   let draft: PromptInfo | undefined
@@ -299,12 +319,17 @@ async function leaveAndReturn(app: App) {
   // A leader key, since text in the composer would turn a slash command into more text.
   app.mockInput.pressKey("x", { ctrl: true })
   app.mockInput.pressKey("n")
-  await app.waitForFrame((frame) => !frame.includes("Looked at it"))
+  await app.waitForFrame(() => !app.renderer.root.findDescendantById("msg_shot"))
   await app.mockInput.typeText("/sessions")
   app.mockInput.pressEnter()
   await app.waitForFrame((frame) => frame.includes("Sessions") && frame.includes("Media refs"))
   app.mockInput.pressEnter()
-  await waitForHighlightedFrame(app, (frame) => frame.includes("Looked at it"))
+  await app.waitForFrame(
+    (frame) =>
+      frame.includes("What is in [Image 1]") &&
+      !!app.renderer.root.findDescendantById("msg_shot") &&
+      app.renderer.currentFocusedEditor instanceof TextareaRenderable,
+  )
 }
 
 for (const queued of [false, true]) {

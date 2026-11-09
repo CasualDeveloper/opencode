@@ -22,7 +22,7 @@ import {
   type SessionRevertOperation,
   type SessionRevertState,
 } from "./revert-machine"
-import { selectSessionUserMessages } from "./session-domain"
+import { loadUndoTarget, selectSessionUserMessages } from "./session-domain"
 
 const IDLE = createSessionRevertState()
 
@@ -50,6 +50,7 @@ export function createSessionRevert(input: {
     return viewSessionRevert((sessionID && sessions()[sessionID]) || IDLE, {
       messages: input.session.history.userMessages(),
       revertMessageID: input.session.data.revertMessageID(),
+      more: !!sessionID && data.session.message.more(sessionID),
     })
   })
 
@@ -78,7 +79,7 @@ export function createSessionRevert(input: {
     })
 
   const restore = (
-    target: RevertTarget,
+    target: Pick<RevertTarget, "composer" | "directory">,
     message: SessionMessageUser,
     restored = messageDraft(message, target.directory),
   ) => {
@@ -90,7 +91,9 @@ export function createSessionRevert(input: {
   }
 
   const snapshot = (sessionID: string) => {
-    const messages = selectSessionUserMessages(data.session.message.list(sessionID))
+    const messages = selectSessionUserMessages(
+      targets.get(sessionID)?.history() ?? data.session.message.list(sessionID),
+    )
 
     return {
       messages,
@@ -105,7 +108,11 @@ export function createSessionRevert(input: {
     const before = runs.get(sessionID)
 
     if (untrack(sessions)[sessionID]?.status !== "running")
-      targets.set(sessionID, { composer: prompt.capture(), directory: location().directory })
+      targets.set(sessionID, {
+        composer: prompt.capture(),
+        directory: location().directory,
+        history: data.session.message.capture(sessionID),
+      })
     dispatch(sessionID, event(sessionID))
     const started = runs.get(sessionID)
 
@@ -231,50 +238,82 @@ export function createSessionRevert(input: {
     target: RevertTarget,
     signal: AbortSignal,
   ): Promise<SessionRevertEvent> {
-    if (operation.type === "withdraw") {
-      // The cancel releases the prompt's blob refs and sweeps blobs nothing else references, so the draft takes
-      // local copies of its media first; if they cannot load, the prompt stays queued.
-      const restored = await pinPromptMedia(messageDraft(operation.message, target.directory))
+    return data.session.mutate(sessionID, async (reservation): Promise<SessionRevertEvent> => {
       signal.throwIfAborted()
-      await server.api.session.inbox.cancel({ sessionID, inboxID: operation.message.id }, { signal })
+      if (operation.type === "undo" || operation.type === "rewind-to") {
+        const prior = (await server.api.session.get({ sessionID }, { signal })).revert?.messageID
+        const history = () => selectSessionUserMessages(target.history())
+        const selected =
+          operation.type === "rewind-to"
+            ? history().find((message) => message.id === operation.messageID)
+            : prior
+              ? (
+                  await loadUndoTarget({
+                    messageID: prior,
+                    signal,
+                    messages: history,
+                    more: () => data.session.message.more(sessionID),
+                    loadMore: () => data.session.message.loadMore(sessionID, { signal }),
+                  })
+                )?.message
+              : history().at(-1)
+        if (!selected) return { type: "operation.empty", attempt }
+        const restored = await pinPromptMedia(messageDraft(selected, target.directory), signal)
+        signal.throwIfAborted()
+        const delivered =
+          !data.session.input.has(sessionID, selected.id) &&
+          data.session.message.get(sessionID, selected.id) !== undefined
+        const withdrawn = !delivered && (await reservation.withdraw(selected.id, { signal })) === "withdrawn"
+        signal.throwIfAborted()
+        dispatch(sessionID, {
+          type: "operation.resolved",
+          attempt,
+          prior,
+          operation: withdrawn ? { type: "withdraw", message: selected } : { type: "rewind", message: selected, prior },
+        })
+        if (withdrawn) return { type: "withdraw.succeeded", attempt, prompt: restored, ...snapshot(sessionID) }
+        // Interrupt acknowledges before the execution settles, and staging a busy Session fails. The local status can
+        // lag the server either way, so always settle first; both are idle no-ops. Like the TUI, stop at the first
+        // failure instead of waiting on work that was never interrupted.
+        await server.api.session.interrupt({ sessionID }, { signal })
+        await server.api.experimental.session.wait({ sessionID }, { signal })
+        const revert = await server.api.session.revert.stage({ sessionID, messageID: selected.id }, { signal })
+        const current = data.session.get(sessionID)
+        if (current) data.session.remember({ ...current, revert })
 
-      return { type: "withdraw.succeeded", attempt, prompt: restored, ...snapshot(sessionID) }
-    }
-
-    if (operation.type === "rewind") {
-      // Interrupt acknowledges before the execution settles, and staging a busy Session fails. The local status can
-      // lag the server either way, so always settle first; both are idle no-ops. Like the TUI, stop at the first
-      // failure instead of waiting on work that was never interrupted.
-      await server.api.session.interrupt({ sessionID }, { signal })
-      await server.api.experimental.session.wait({ sessionID }, { signal })
-      await server.api.session.revert.stage({ sessionID, messageID: operation.message.id }, { signal })
-
-      // Like the TUI, pending inputs are left alone: the revert hides them, committing it drops them, and redo
-      // delivers them.
-      return {
-        type: "rewind.succeeded",
-        attempt,
-        draft: {
-          prompt: clonePrompt(target.composer.current()),
-          cursor: target.composer.cursor(),
-          context: target.composer.context.items().map((item) => ({ ...item })),
-        },
-        ...snapshot(sessionID),
+        // Like the TUI, pending inputs are left alone: the revert hides them, committing it drops them, and redo
+        // delivers them.
+        return {
+          type: "rewind.succeeded",
+          attempt,
+          prompt: restored,
+          draft: {
+            prompt: clonePrompt(target.composer.current()),
+            cursor: target.composer.cursor(),
+            context: target.composer.context.items().map((item) => ({ ...item })),
+          },
+          ...snapshot(sessionID),
+        }
       }
-    }
 
-    // Like the TUI, redo restores every reverted message at once and leaves the composer alone.
-    if (operation.type === "redo") {
-      await server.api.session.revert.clear({ sessionID }, { signal })
+      // Like the TUI, redo restores every reverted message at once and leaves the composer alone.
+      if (operation.type === "redo") {
+        await server.api.session.revert.clear({ sessionID }, { signal })
+        const current = data.session.get(sessionID)
+        if (current) data.session.remember({ ...current, revert: undefined })
 
-      return { type: "redo.succeeded", attempt, ...snapshot(sessionID) }
-    }
+        return { type: "redo.succeeded", attempt, ...snapshot(sessionID) }
+      }
 
-    await (operation.prior
-      ? server.api.session.revert.stage({ sessionID, messageID: operation.prior }, { signal })
-      : server.api.session.revert.clear({ sessionID }, { signal }))
+      if (operation.type !== "undo-rewind") throw new Error("Resolved revert operations cannot start another run")
+      const revert = operation.prior
+        ? await server.api.session.revert.stage({ sessionID, messageID: operation.prior }, { signal })
+        : await server.api.session.revert.clear({ sessionID }, { signal }).then(() => undefined)
+      const current = data.session.get(sessionID)
+      if (current) data.session.remember({ ...current, revert })
 
-    return { type: "undo-rewind.succeeded", attempt, ...snapshot(sessionID) }
+      return { type: "undo-rewind.succeeded", attempt, ...snapshot(sessionID) }
+    })
   }
 
   return {
@@ -307,6 +346,7 @@ export function createSessionRevert(input: {
 type RevertTarget = {
   composer: ReturnType<ReturnType<typeof useComposerState>["capture"]>
   directory: string
+  history: ReturnType<ReturnType<typeof useData>["session"]["message"]["capture"]>
 }
 
 type Run = {
