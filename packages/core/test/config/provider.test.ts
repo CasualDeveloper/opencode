@@ -120,6 +120,49 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("applies wildcard context and input limits to discovered models with a smaller literal override", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("proxy")
+      const standard = Model.ID.make("sol-standard")
+      const small = Model.ID.make("sol-small")
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              proxy: {
+                package: "@opencode/ai/providers/openai/chat",
+                models: {
+                  "sol-small": { limit: { context: 200_000, input: 168_000 } },
+                  "sol-*": { limit: { context: 1_000_000, input: 872_000 } },
+                },
+              },
+            },
+          }),
+        }),
+      ])
+      yield* providers.transform((editor) => {
+        for (const id of [standard, small]) {
+          editor.models.update(providerID, id, (model) => {
+            model.limit = { context: 96_000, input: 64_000, output: 32_000 }
+          })
+        }
+      })
+      expect(required(yield* models.get(providerID, standard)).limit).toEqual({
+        context: 1_000_000,
+        input: 872_000,
+        output: 32_000,
+      })
+      expect(required(yield* models.get(providerID, small)).limit).toEqual({
+        context: 200_000,
+        input: 168_000,
+        output: 32_000,
+      })
+    }),
+  )
+
   it.effect("applies wildcard overlays to integration catalogs without creating pattern IDs", () =>
     Effect.gen(function* () {
       const plugin = yield* Plugin.Service
