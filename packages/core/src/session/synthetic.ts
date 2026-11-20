@@ -46,4 +46,4 @@ export const make = (
       )
     if (input.resume !== false && !(yield* get).revert) yield* wake(sessionID)
     return admitted
-  }, Effect.uninterruptible)
+  }, (effect, input) => SessionInbox.serialized(input.sessionID, Effect.uninterruptible(effect)))

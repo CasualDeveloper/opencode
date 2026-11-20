@@ -20,6 +20,15 @@ const messages = [
 ] satisfies SessionMessageInfo[]
 
 describe("visibleTimelineMessages", () => {
+  test("clips by transcript position even when IDs are not chronological, and hides an unloaded boundary", () => {
+    const source: SessionMessageInfo[] = [
+      { id: "msg_z", type: "user", text: "earlier", time: { created: 1 } },
+      { id: "msg_a", type: "user", text: "boundary", time: { created: 2 } },
+      { id: "msg_0", type: "user", text: "later", time: { created: 3 } },
+    ]
+    expect(visibleTimelineMessages(source, [], "msg_a").map((message) => message.id)).toEqual(["msg_z"])
+    expect(visibleTimelineMessages(source, [], "msg_unloaded")).toEqual([])
+  })
   const steer = {
     id: "msg_3",
     sessionID: "ses_1",

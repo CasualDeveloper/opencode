@@ -37,40 +37,9 @@ import {
   type PromptStatusState,
 } from "./prompt-status-machine"
 
-// The model each session was last switched to from this client, by session ID.
-const switched = new Map<string, string>()
-
 // The optimistic busy status of each session, by session ID. Module-wide, because a new session's first prompt and
 // the follow-ups sent from its own composer go through different submit machines. A session left out is `server`.
 const statuses = new Map<string, PromptStatusState>()
-
-// Each session's last send, until it has joined the data layer's send chain. A send first builds its request
-// (attachments read, mentions checked), which takes one longer than another, and must still join after the sends made
-// before it. Module-wide for the same reason as `statuses`.
-const joining = new Map<string, Promise<void>>()
-
-/** A send's place in its session's order: `before` is the send made before it, until that one has joined the chain. */
-type Turn = { before: Promise<void> | undefined; joined: () => void }
-
-/**
- * Runs one send in its session's order. Call it before the first await. `send` builds its request in whatever time
- * that takes, waits for `before`, puts the request in the data layer's send chain and calls `joined` at once. A send
- * that ends without joining does not hold the next one back.
- */
-function inTurn<T>(sessionID: string, send: (turn: Turn) => Promise<T>) {
-  const mine = Promise.withResolvers<void>()
-  const turn = { before: joining.get(sessionID), joined: () => mine.resolve() }
-
-  joining.set(sessionID, mine.promise)
-  void mine.promise.then(() => {
-    if (joining.get(sessionID) === mine.promise) joining.delete(sessionID)
-  })
-  const sending = send(turn)
-
-  void sending.then(turn.joined, turn.joined)
-
-  return sending
-}
 
 /** What a cancelled send fails with: Stop pressed while its request still waited on the gate. */
 const CANCELLED = new Error("The send was cancelled before its request left.")
@@ -453,12 +422,11 @@ async function runClientCommand(input: ComposerSubmitInput, prompt: Prompt, run:
   // following the same steer rule as server commands.
   const selection = currentSelection(input)
 
-  if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer")
-    await applySelection(
-      input.adapter.session(),
-      selection,
-      input.adapter.controls().model.selection.trackSessionCommit,
-    )
+  if (input.adapter.kind === "active-session" && selection && (input.delivery?.(false) ?? "steer") === "steer") {
+    const session = input.adapter.session()
+    const track = input.adapter.controls().model.selection.trackSessionCommit
+    await session.data.session.mutate(session.id, () => applySelection(session, selection, track))
+  }
   clearClientCommand(input, prompt)
   await run()
 }
@@ -468,6 +436,14 @@ async function startSession(
   submission: ComposerSubmission,
   handle: ComposerSubmissionHandle,
 ) {
+  // Existing-session images prepare inside the admission queue; only a new tab needs URLs for its handoff.
+  if (input.adapter.kind === "active-session")
+    return {
+      images: submission.images,
+      session: input.adapter.session(),
+      cleanupReady: Promise.resolve(),
+      complete: undefined,
+    }
   // Images restored from a draft or history carry ids only; the optimistic message shows their URLs.
   const images = await Promise.all(
     submission.images.map(async (image) => ({
@@ -476,8 +452,6 @@ async function startSession(
     })),
   )
 
-  if (input.adapter.kind === "active-session")
-    return { images, session: input.adapter.session(), cleanupReady: Promise.resolve(), complete: undefined }
   const started = await input.adapter.start(submission.selection, handle, handoffMessage({ ...submission, images }))
 
   return started && { ...started, images }
@@ -825,16 +799,9 @@ function restoreDraft(
 // A shell command, a server command and a prompt all leave through the session's one send chain, each in its turn, so
 // the server receives them in the order of the Enter presses, whatever each had to build or wait for first.
 function sendShell(session: ComposerSession, value: ComposerSubmission) {
-  return inTurn(session.id, async (turn) => {
-    if (turn.before) await turn.before
-
-    const sending = session.data.session.sequence(session.id, () =>
-      session.api.shell({ sessionID: session.id, id: value.id, command: value.text }),
-    )
-
-    turn.joined()
-    await sending
-  })
+  return session.data.session.sequence(session.id, () =>
+    session.api.shell({ sessionID: session.id, id: value.id, command: value.text }),
+  )
 }
 
 function sendCommand(
@@ -844,12 +811,9 @@ function sendCommand(
   track: ModelSelection["trackSessionCommit"] | undefined,
   gate: Gate | undefined,
 ) {
-  return inTurn(session.id, async (turn) => {
-    const request = await buildSubmissionRequest(session, value)
-
-    if (turn.before) await turn.before
-
-    const sending = session.data.session.sequence(
+  let request: Awaited<ReturnType<typeof buildSubmissionRequest>>
+  return session.data.session
+    .sequence(
       session.id,
       () =>
         session.api.command({
@@ -870,23 +834,19 @@ function sendCommand(
       // the gate stops there, before the composer's selection is committed: nothing of it reaches the server.
       async () => {
         await gate?.open
+        request = await buildSubmissionRequest(session, value)
 
         // Like queued prompts, queued commands must not apply the composer's selection to active work.
         if (value.delivery === "steer") await applySelection(session, value.selection, track)
       },
     )
-
-    turn.joined()
-    await sending
-    session.data.session.acceptSend(session.id)
-  })
+    .then(() => session.data.session.acceptSend(session.id))
 }
 
 async function applySelection(
   session: ComposerSession,
   selection: ComposerSelection,
   track?: ModelSelection["trackSessionCommit"],
-  beforeModel?: () => Promise<void>,
 ) {
   const cancel = track?.(session.id, selection)
 
@@ -897,25 +857,11 @@ async function applySelection(
       await session.api.switchAgent({ sessionID: session.id, agent: selection.agent })
     }
 
-    await beforeModel?.()
-
-    // Skip an unchanged model so a send never waits on that request. An agent switch or a revert can move the
-    // model, and cached SSE state may lag this client's earlier switch, which must also match.
-    const model = `${selection.model.providerID}/${selection.model.modelID}/${selection.variant ?? ""}`
-    const saved = current?.model && `${current.model.providerID}/${current.model.id}/${current.model.variant ?? ""}`
-
-    if (
-      current?.agent === selection.agent &&
-      !current.revert &&
-      saved === model &&
-      (switched.get(session.id) ?? model) === model
-    )
-      return
+    // The server deduplicates unchanged selections; cached SSE state can lag earlier writes.
     await session.api.switchModel({
       sessionID: session.id,
       model: { id: selection.model.modelID, providerID: selection.model.providerID, variant: selection.variant },
     })
-    switched.set(session.id, model)
   } catch (error) {
     cancel?.()
     throw error
@@ -928,57 +874,44 @@ function sendPrompt(
   track: ModelSelection["trackSessionCommit"] | undefined,
   gate: Gate | undefined,
 ) {
-  return inTurn(session.id, (turn) => admitPrompt(session, value, track, gate, turn))
-}
-
-async function admitPrompt(
-  session: ComposerSession,
-  value: ComposerSubmission,
-  track: ModelSelection["trackSessionCommit"] | undefined,
-  gate: Gate | undefined,
-  turn: Turn,
-) {
-  const request = await buildSubmissionRequest(session, value)
-
-  // Switching agent or model reconfigures the session immediately, and with it
-  // the remainder of a running turn. A steer targets that turn, so its
-  // selection applies now; a queued follow-up must not reconfigure the turn it
-  // waits behind, so it runs with the session selection at delivery time (the
-  // intended selection stays recorded in its metadata).
-  // Like the TUI, a staged revert settles after the agent switch and before the model switch and admission. The
-  // server would otherwise commit it on admission and delete every row from its boundary on, the model switch too.
-  const settle = async () => {
-    if (session.current()?.revert) await session.api.revert.commit({ sessionID: session.id })
-  }
-
-  const commit = () => (value.delivery === "steer" ? applySelection(session, value.selection, track, settle) : settle())
-  // The data layer admits the prompt locally before it commits the selection, so a steer shows as pending while the
-  // selection commits. A staged revert settles before admission instead: its committed echo removes every local row
-  // from its boundary on. Only an idle session stages one, and a prompt into it starts work rather than showing as
-  // pending.
-  const staged = !!session.current()?.revert
-
-  // A send cancelled while it waits on the gate stops before anything of it reaches the server: the staged revert
-  // stays staged, and the agent and model stay as they were.
-  if (staged) {
-    await gate?.open
-    await commit()
-  }
-
-  // A retried admission reuses the first commit rather than switching again.
-  let committed: Promise<unknown> | undefined
-
-  const admission = {
+  const request = buildPromptRequest({
+    prompt: value.prompt,
+    context: value.context,
+    images: [],
+    text: value.text,
+    sessionDirectory: session.directory,
+  })
+  // Reserve admission before attachment reads; selection and revert commit belong to the server's batch.
+  let cancel: (() => void) | undefined
+  const sending = session.data.session.prompt({
     id: value.id,
     sessionID: session.id,
     delivery: value.delivery,
+    selection:
+      value.delivery === "steer"
+        ? {
+            agent: value.selection.agent,
+            model: {
+              id: value.selection.model.modelID,
+              providerID: value.selection.model.providerID,
+              variant: value.selection.variant,
+            },
+          }
+        : undefined,
     text: request.text,
-    files: request.files.map((file) => ({
-      uri: file.uri,
-      name: file.name,
-      description: file.description,
-      mention: file.mention,
-    })),
+    prepare: async () => {
+      await gate?.open
+      const prepared = await buildSubmissionRequest(session, value)
+      if (value.delivery === "steer") cancel = track?.(session.id, value.selection)
+      return {
+        files: prepared.files.map((file) => ({
+          uri: file.uri,
+          name: file.name,
+          description: file.description,
+          mention: file.mention,
+        })),
+      }
+    },
     agents: request.agents,
     skills: request.skills,
     metadata: {
@@ -988,18 +921,18 @@ async function admitPrompt(
       agent: value.selection.agent,
       model: selectionModel(value.selection),
     },
-    // The data layer runs this in the prompt's turn of the send chain. The selection's commit follows what the
-    // plugins prepare, so a send cancelled meanwhile stops here and nothing of it reaches the server.
-    prepare: () => (committed ??= (gate?.open ?? Promise.resolve()).then(() => (staged ? undefined : commit()))),
-  }
-
-  if (turn.before) await turn.before
-  const sending = session.data.session.prompt(admission)
-
-  turn.joined()
-  // An admission that fails is tried once more. A cancelled one is not: the person stopped it.
-  await sending.catch((error) => (error === CANCELLED ? Promise.reject(error) : session.data.session.prompt(admission)))
-  session.data.session.acceptSend(session.id)
+  })
+  return sending.then(
+    (admitted) => {
+      if (admitted.delivery === "queue") cancel?.()
+      session.data.session.acceptSend(session.id)
+      return admitted
+    },
+    (error) => {
+      if (!session.admitted(value.id)) cancel?.()
+      throw error
+    },
+  )
 }
 
 async function buildSubmissionRequest(session: ComposerSession, value: ComposerSubmission) {

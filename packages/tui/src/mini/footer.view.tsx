@@ -108,7 +108,7 @@ type RunFooterViewProps = {
   onFormCancel: (input: FormCancel) => void | Promise<void>
   onCycle: () => void
   onInterrupt: () => boolean
-  onQueuedPromptAction?: (action: QueuedPromptAction, inboxID: string) => Promise<void>
+  onQueuedPromptAction?: (action: QueuedPromptAction, inboxID: string) => Promise<void | "withdrawn" | "delivered">
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
   onInputClear: () => void
   onExitRequest?: () => boolean
@@ -323,7 +323,11 @@ export function RunFooterView(props: RunFooterViewProps) {
     if (!run) return false
     const result = await runQueuedAction(inboxID, async () => {
       const error = await run(action, inboxID).then(
-        () => undefined,
+        (outcome) => {
+          if (action === "withdraw" && outcome !== "withdrawn")
+            return new Error("Prompt was already sent. Use Undo to take it back")
+          return undefined
+        },
         (error) => error,
       )
       if (!error) return true
@@ -784,7 +788,7 @@ export function RunFooterView(props: RunFooterViewProps) {
                                 props.onStatus("leave shell mode before undoing a queued prompt")
                                 return
                               }
-                              if (!(await queuedPromptAction("cancel", item.messageID, "undo"))) return
+                              if (!(await queuedPromptAction("withdraw", item.messageID, "undo"))) return
                               closePanel()
                               composer.replacePrompt(
                                 promptAppend(composer.current(), item.prompt, renderer.widthMethod),

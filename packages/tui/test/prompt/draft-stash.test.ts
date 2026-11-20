@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { saveDraft, takeDraft } from "../../src/component/prompt/draft-stash"
+import { clearDraft, restoreDraft, saveDraft, takeDraft } from "../../src/component/prompt/draft-stash"
 import { emptyPrompt } from "../../src/prompt/history"
 
 // The Prompt component stashes an unsent draft in onCleanup and takes it back
@@ -10,6 +10,18 @@ function draft(text: string, cursor = text.length) {
 }
 
 describe("prompt draft stash", () => {
+  test("failed admission restores only an empty originating slot and late acknowledgement clears only its matching draft", () => {
+    const failed = draft("failed prompt")
+    expect(restoreDraft("ses_restore", failed)).toBe(true)
+    expect(clearDraft("ses_restore", draft("another prompt").prompt)).toBe(false)
+    expect(clearDraft("ses_restore", failed.prompt)).toBe(true)
+    const attachment = draft("")
+    attachment.prompt.files = [{ uri: "data:image/png;base64,YQ==" }]
+    saveDraft("ses_restore", attachment)
+    expect(restoreDraft("ses_restore", failed)).toBe(false)
+    expect(takeDraft("ses_restore")).toEqual(attachment)
+  })
+
   test("tab-keyed drafts stay on the tab they were written in", () => {
     const two = draft("notes for session two")
     saveDraft("ses_two", two)

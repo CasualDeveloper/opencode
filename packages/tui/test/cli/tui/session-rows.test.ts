@@ -5,6 +5,8 @@ import { createStore } from "solid-js/store"
 import { SessionTurn } from "@opencode/util/session-turn"
 import {
   cacheReuseDrop,
+  loadRevertMessages,
+  partitionRevertMessages,
   messageBoundaryIDs,
   reduceSessionRows as reduceRows,
   sessionRowID,
@@ -13,6 +15,23 @@ import {
 
 const reduceSessionRows = (messages: SessionMessageInfo[], inputs = new Set<string>(), turnTokens = false) =>
   reduceRows(messages, inputs, turnTokens, "medium")
+
+test("loads across a page-edge revert and partitions by transcript order", async () => {
+  const user = (id: string): SessionMessageInfo => ({ id, type: "user", text: id, time: { created: 1 } })
+  let messages = [user("msg_boundary"), user("msg_a_later")]
+  expect(partitionRevertMessages(messages, "msg_missing")).toEqual({ before: [], from: [] })
+  const loaded = await loadRevertMessages({
+    boundary: "msg_boundary",
+    messages: () => messages,
+    more: () => messages.length === 2,
+    loadMore: async () => {
+      messages = [user("msg_z_earlier"), ...messages]
+    },
+  })
+  expect(partitionRevertMessages(loaded ?? [], "msg_boundary").before.map((message) => message.id)).toEqual([
+    "msg_z_earlier",
+  ])
+})
 
 test("indexed tail footer calculations do not subscribe to an unrelated history prefix", () => {
   createRoot((dispose) => {

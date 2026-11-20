@@ -49,6 +49,13 @@ const rewound = (attempt: number, text: string): SessionRevertEvent => ({
   ...delivered,
 })
 
+const resolved = (attempt: number, message = m3, prior?: string, withdraw = false): SessionRevertEvent => ({
+  type: "operation.resolved",
+  attempt,
+  prior,
+  operation: withdraw ? { type: "withdraw", message } : { type: "rewind", message, prior },
+})
+
 function replay(events: SessionRevertEvent[], from = createSessionRevertState()) {
   return events.reduce<SessionRevertTransition[]>((steps, event) => {
     steps.push(transitionSessionRevert(steps.at(-1)?.state ?? from, event))
@@ -73,7 +80,7 @@ describe("transitionSessionRevert", () => {
   test("refuses every request while an operation runs, so two pipelines never share a Session", () => {
     const running = last([undo()]).state
 
-    expect(running).toMatchObject({ status: "running", operation: { type: "rewind", message: m3 } })
+    expect(running).toMatchObject({ status: "running", operation: { type: "undo" }, echoes: [] })
 
     for (const event of [
       undo(),
@@ -91,10 +98,10 @@ describe("transitionSessionRevert", () => {
   })
 
   test("a second undo before the staged event arrives rewinds the earlier prompt", () => {
-    // The server's boundary is still unset: the mock server, or a slow event stream, has not reported the first stage.
-    const steps = replay([undo(), rewound(1, "unsent draft"), undo(undefined)])
+    // The event stream is stale; resolution uses the server's boundary inside the reservation.
+    const steps = replay([undo(), resolved(1), rewound(1, "unsent draft"), undo(undefined), resolved(2, m2, m3.id)])
 
-    expect(steps[1].state).toEqual({
+    expect(steps[2].state).toEqual({
       status: "restored",
       attempt: 1,
       echoes: ["msg_3"],
@@ -102,21 +109,21 @@ describe("transitionSessionRevert", () => {
       prior: undefined,
       draft: draft("unsent draft"),
     })
-    expect(steps[2].state).toEqual({
+    expect(steps[4].state).toEqual({
       status: "running",
       attempt: 2,
       echoes: ["msg_3", "msg_2"],
       operation: { type: "rewind", message: m2, prior: "msg_3" },
       known: { boundary: "msg_3" },
     })
-    expect(steps[2].effects).toEqual([
+    expect(steps[3].effects).toEqual([
       { type: "toast.dismiss" },
-      { type: "operation.run", attempt: 2, operation: { type: "rewind", message: m2, prior: "msg_3" } },
+      { type: "operation.run", attempt: 2, operation: { type: "undo" } },
     ])
   })
 
   test("redo right after a rewind clears it before the staged event arrives", () => {
-    const restored = last([undo(), rewound(1, "")]).state
+    const restored = last([undo(), resolved(1), rewound(1, "")]).state
 
     expect(view(restored, undefined).canRedo).toBe(true)
 
@@ -143,46 +150,50 @@ describe("transitionSessionRevert", () => {
   test("a late echo of an earlier rewind neither retires the toast nor repeats a rewind", () => {
     const steps = replay([
       undo(),
+      resolved(1),
       rewound(1, "unsent draft"),
       undo(undefined),
+      resolved(2, m2, m3.id),
       rewound(2, "msg_3 text"),
       // The echo of the first stage lands after the second rewind; the echo of the second is still due.
       { type: "revert.staged", messageID: "msg_3" },
     ])
 
-    expect(steps[4].state).toEqual({ ...steps[3].state, echoes: ["msg_2"] })
-    expect(steps[4].effects).toEqual([])
+    expect(steps[6].state).toEqual({ ...steps[5].state, echoes: ["msg_2"] })
+    expect(steps[6].effects).toEqual([])
 
     // The store now says msg_3, but msg_2 is the boundary, so a third undo moves on to msg_1.
-    const third = transitionSessionRevert(steps[4].state, undo("msg_3"))
+    const third = last([undo("msg_3"), resolved(3, messages[0], m2.id)], steps[6].state)
 
     expect(third.state).toMatchObject({ operation: { type: "rewind", message: { id: "msg_1" }, prior: "msg_2" } })
 
     // Its own echo, the last one due, leaves the rewind undoable.
-    const echoed = transitionSessionRevert(steps[4].state, { type: "revert.staged", messageID: "msg_2" })
+    const echoed = transitionSessionRevert(steps[6].state, { type: "revert.staged", messageID: "msg_2" })
 
-    expect(echoed.state).toEqual({ ...steps[3].state, echoes: [] })
+    expect(echoed.state).toEqual({ ...steps[5].state, echoes: [] })
     expect(echoed.effects).toEqual([])
   })
 
   test("a commit while a rewind is still interrupting keeps that rewind's own echo", () => {
     const steps = replay([
       undo(),
+      resolved(1),
       // A prompt sent while an earlier boundary was staged commits it before this rewind's stage goes out.
       { type: "revert.committed" },
       rewound(1, "unsent draft"),
       { type: "revert.staged", messageID: "msg_3" },
     ])
 
-    expect(steps[1].state).toMatchObject({ status: "running", echoes: ["msg_3"] })
-    expect(steps[3].state).toEqual({ ...steps[2].state, echoes: [] })
-    expect(steps[3].state.status).toBe("restored")
-    expect(steps[3].effects).toEqual([])
+    expect(steps[2].state).toMatchObject({ status: "running", echoes: ["msg_3"] })
+    expect(steps[4].state).toEqual({ ...steps[3].state, echoes: [] })
+    expect(steps[4].state.status).toBe("restored")
+    expect(steps[4].effects).toEqual([])
   })
 
   test("a late stage echo after a redo keeps the cleared boundary until the clear echo arrives", () => {
     const steps = replay([
       undo(),
+      resolved(1),
       rewound(1, ""),
       { type: "redo.requested", revertMessageID: undefined },
       { type: "redo.succeeded", attempt: 2, ...delivered },
@@ -190,16 +201,23 @@ describe("transitionSessionRevert", () => {
       { type: "revert.cleared" },
     ])
 
-    expect(steps[4].state).toEqual({ status: "idle", attempt: 2, echoes: [undefined], known: { boundary: undefined } })
+    expect(steps[5].state).toEqual({ status: "idle", attempt: 2, echoes: [undefined], known: { boundary: undefined } })
     // The store reports msg_3 from the late echo, but the Session has nothing to redo.
-    expect(view(steps[4].state, "msg_3")).toMatchObject({ canRedo: false })
-    expect(steps[5].state).toEqual({ status: "idle", attempt: 2, echoes: [] })
+    expect(view(steps[5].state, "msg_3")).toMatchObject({ canRedo: false })
+    expect(steps[6].state).toEqual({ status: "idle", attempt: 2, echoes: [] })
   })
 
   test("an older toast's Undo is ignored after a newer rewind", () => {
-    const steps = replay([rewindTo("msg_3"), rewound(1, "original draft"), rewindTo("msg_2"), rewound(2, "msg_3 text")])
+    const steps = replay([
+      rewindTo("msg_3"),
+      resolved(1),
+      rewound(1, "original draft"),
+      rewindTo("msg_2"),
+      resolved(2, m2, m3.id),
+      rewound(2, "msg_3 text"),
+    ])
 
-    const restored = steps[3].state
+    const restored = steps[5].state
     const stale = transitionSessionRevert(restored, { type: "toast.undo", attempt: 1 })
 
     expect(stale.state).toBe(restored)
@@ -234,14 +252,15 @@ describe("transitionSessionRevert", () => {
   test("a double-clicked Undo runs once", () => {
     const steps = replay([
       rewindTo("msg_3"),
+      resolved(1),
       rewound(1, "draft"),
       { type: "toast.undo", attempt: 1 },
       { type: "toast.undo", attempt: 1 },
     ])
 
-    expect(steps[2].effects.filter((effect) => effect.type === "operation.run")).toHaveLength(1)
-    expect(steps[3].state).toBe(steps[2].state)
-    expect(steps[3].effects).toEqual([])
+    expect(steps[3].effects.filter((effect) => effect.type === "operation.run")).toHaveLength(1)
+    expect(steps[4].state).toBe(steps[3].state)
+    expect(steps[4].effects).toEqual([])
   })
 
   // A commit lands after every request sent before it, so no echo is still due.
@@ -250,7 +269,7 @@ describe("transitionSessionRevert", () => {
     { event: { type: "revert.cleared" }, echoes: ["msg_3"] },
     { event: { type: "revert.committed" }, echoes: [] },
   ])("$event.type from elsewhere retires the Rewound toast", ({ event, echoes }) => {
-    const restored = last([rewindTo("msg_3"), rewound(1, "draft")]).state
+    const restored = last([rewindTo("msg_3"), resolved(1), rewound(1, "draft")]).state
     const next = transitionSessionRevert(restored, event)
 
     expect(next.state).toEqual({ status: "idle", attempt: 1, echoes })
@@ -261,7 +280,7 @@ describe("transitionSessionRevert", () => {
   test("a queued prompt is withdrawn instead of rewound", () => {
     const queued = new Set(["msg_3"])
     const known: SessionRevertState = { status: "idle", attempt: 4, echoes: [], known: { boundary: undefined } }
-    const start = transitionSessionRevert(known, undo(undefined, queued))
+    const start = last([undo(undefined, queued), resolved(5, m3, undefined, true)], known)
 
     expect(start.state).toEqual({
       status: "running",
@@ -277,8 +296,8 @@ describe("transitionSessionRevert", () => {
       type: "withdraw.succeeded",
       attempt: 5,
       prompt,
-      messages,
-      inboxIDs: queued,
+      messages: messages.slice(0, -1),
+      inboxIDs: new Set(),
     })
 
     expect(done.state).toEqual({ ...known, attempt: 5 })
@@ -286,11 +305,13 @@ describe("transitionSessionRevert", () => {
       { type: "draft.restoreMessage", message: m3, prompt },
       { type: "cursor.select", messageID: "msg_2" },
     ])
-    expect(transitionSessionRevert(known, rewindTo("msg_3", undefined, queued)).state).toEqual(start.state)
+    expect(last([rewindTo("msg_3", undefined, queued), resolved(5, m3, undefined, true)], known).state).toEqual(
+      start.state,
+    )
   })
 
   test("a failure returns to idle and keeps the known boundary", () => {
-    const running = last([undo(), rewound(1, ""), undo()]).state
+    const running = last([undo(), resolved(1), rewound(1, ""), undo(), resolved(2, m2, m3.id)]).state
     const failed = transitionSessionRevert(running, { type: "operation.failed", attempt: 2, error: "busy" })
 
     // The failed stage sends no echo, so only the first one is still due.
@@ -308,6 +329,8 @@ describe("transitionSessionRevert", () => {
 
     for (const event of [
       { type: "operation.failed", attempt: 1, error: "aborted" },
+      resolved(1),
+      { type: "operation.empty", attempt: 1 },
       rewound(1, ""),
     ] satisfies SessionRevertEvent[]) {
       const late = transitionSessionRevert(timedOut.state, event)
@@ -318,13 +341,15 @@ describe("transitionSessionRevert", () => {
   })
 
   test("a result from an earlier attempt or another operation is ignored", () => {
-    const running = last([undo(), rewound(1, ""), undo()]).state
+    const running = last([undo(), resolved(1), rewound(1, ""), undo()]).state
 
     for (const event of [
       rewound(1, ""),
       { type: "redo.succeeded", attempt: 2, ...delivered },
       { type: "operation.failed", attempt: 1 },
       { type: "operation.timed-out", attempt: 1 },
+      resolved(1),
+      { type: "operation.empty", attempt: 1 },
     ] satisfies SessionRevertEvent[]) {
       expect(transitionSessionRevert(running, event).state).toBe(running)
     }
@@ -332,7 +357,7 @@ describe("transitionSessionRevert", () => {
 
   test("disposal aborts a run and retires a toast", () => {
     const running = last([undo()]).state
-    const restored = last([undo(), rewound(1, "")]).state
+    const restored = last([undo(), resolved(1), rewound(1, "")]).state
     const idle = createSessionRevertState()
 
     expect(transitionSessionRevert(running, { type: "disposed" })).toEqual({
@@ -346,11 +371,17 @@ describe("transitionSessionRevert", () => {
     expect(transitionSessionRevert(idle, { type: "disposed" }).state).toBe(idle)
   })
 
-  test("ignores requests with nothing to act on", () => {
+  test("claims unresolved requests and returns idle when the server has nothing to act on", () => {
     const idle = createSessionRevertState()
 
-    expect(transitionSessionRevert(idle, undo("msg_1")).state).toBe(idle)
-    expect(transitionSessionRevert(idle, rewindTo("msg_missing")).state).toBe(idle)
+    for (const event of [undo("msg_1"), rewindTo("msg_missing")]) {
+      const started = transitionSessionRevert(idle, event)
+      expect(started.state.status).toBe("running")
+      expect(last([{ type: "operation.empty", attempt: 1 }], started.state)).toEqual({
+        state: { ...idle, attempt: 1 },
+        effects: [],
+      })
+    }
     expect(transitionSessionRevert(idle, { type: "redo.requested", revertMessageID: undefined }).state).toBe(idle)
     expect(transitionSessionRevert(idle, { type: "toast.undo", attempt: 0 }).state).toBe(idle)
   })

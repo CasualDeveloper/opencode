@@ -128,6 +128,7 @@ function session(input: {
   accept?: () => void
   /** Requests leave as the data layer's send chain lets them: each once the one before it has settled. */
   chained?: boolean
+  delivery?: ComposerDelivery
 }): ComposerSession {
   // The requests made so far, settled or not: the next one starts once they all have.
   const chain: Promise<unknown>[] = []
@@ -172,16 +173,23 @@ function session(input: {
           input.calls.push("shell")
         }),
       command: input.command ?? (async () => undefined),
-      revert: {
-        commit: async () => {
-          input.calls.push("revert-commit")
-        },
-      },
     },
     file: { list: async () => ({ data: [{ path: "src/api.ts" }] }) },
     data: {
       location: { command: { list: () => [] } },
       session: {
+        mutate: async (_sessionID, operation) =>
+          operation({
+            prompt: async () => {
+              throw new Error("Unexpected nested prompt")
+            },
+            undo: async () => {
+              throw new Error("Unexpected undo")
+            },
+            withdraw: async () => {
+              throw new Error("Unexpected withdrawal")
+            },
+          }),
         setStatus: (_sessionID, status) => input.statuses?.push(status),
         acceptSend: () => {
           input.calls.push("accept-send")
@@ -193,9 +201,9 @@ function session(input: {
           input.calls.push("admit")
 
           return sequence(value.sessionID, async () => {
-            await value.prepare?.()
+            const prepared = await value.prepare?.()
             input.calls.push("send")
-            await input.prompt?.(value)
+            await input.prompt?.({ ...value, ...prepared })
 
             // The admitted inbox item, as the server returns it.
             return {
@@ -204,7 +212,7 @@ function session(input: {
               time: { created: 0 },
               type: "user" as const,
               payload: { text: value.text },
-              delivery: value.delivery ?? "steer",
+              delivery: input.delivery ?? value.delivery ?? "steer",
             }
           })
         },
@@ -551,9 +559,7 @@ describe("Composer submission", () => {
     const accepted = Promise.withResolvers<void>()
     const state = createMemoryComposerState({ prompt: "Hello" }).capture()
 
-    await submitInput(active(state, session({ calls, accept: () => accepted.resolve() }))).submit(
-      new Event("submit"),
-    )
+    await submitInput(active(state, session({ calls, accept: () => accepted.resolve() }))).submit(new Event("submit"))
     await accepted.promise
 
     expect(calls.filter((call) => call === "accept-send")).toHaveLength(1)
@@ -712,7 +718,8 @@ describe("Composer submission", () => {
     expect(state.context.items()).toMatchObject([
       { key: "quote:c=selected", text: "Selected passage", comment: "Latest comment" },
     ])
-    expect(calls.filter((call) => call === "send")).toHaveLength(2)
+    // Transport retries belong to the admission layer; the composer submits the quote once.
+    expect(calls.filter((call) => call === "send")).toHaveLength(1)
   })
 
   test("a quote send keeps sending while the composer sends it, and fails only once the composer can retry", async () => {
@@ -913,6 +920,47 @@ describe("Composer submission", () => {
     expect(state.retry.current()).toBeUndefined()
   })
 
+  test("reserves the captured draft before a second submit gesture", async () => {
+    const state = createMemoryComposerState({ prompt: "Only once" }).capture()
+    const calls: string[] = []
+    const accepted = Promise.withResolvers<void>()
+    const target = session({ calls, accept: () => accepted.resolve() })
+    const submission = submitInput(active(state, target))
+    await Promise.all([submission.submit(new Event("submit")), submission.submit(new Event("submit"))])
+    await accepted.promise
+    expect(calls).toEqual(["admit", "send", "accept-send"])
+  })
+
+  test.each(["queue", "rejected"] as const)(
+    "cancels optimistic selection tracking when admission is %s",
+    async (outcome) => {
+      const state = createMemoryComposerState({ prompt: "Selection intent" }).capture()
+      const calls: string[] = []
+      const cancelled = Promise.withResolvers<void>()
+      const selected = controls()
+      selected.model.selection = {
+        ...selection,
+        trackSessionCommit: () => {
+          calls.push("track")
+          return () => {
+            calls.push("cancel")
+            cancelled.resolve()
+          }
+        },
+      }
+      const target = session({
+        calls,
+        delivery: outcome === "queue" ? "queue" : undefined,
+        prompt: async () => {
+          if (outcome === "rejected") throw new Error("Rejected")
+        },
+      })
+      await submitInput(active(state, target, () => selected)).submit(new Event("submit"))
+      await cancelled.promise
+      expect(calls).toEqual(["admit", "track", "send", "cancel", ...(outcome === "queue" ? ["accept-send"] : [])])
+    },
+  )
+
   test("applies the selection and runs a client argument command without admitting it to the session", async () => {
     const state = createMemoryComposerState().capture()
 
@@ -952,23 +1000,21 @@ describe("Composer submission", () => {
   })
 
   test.each([
-    // The prompt admits before the selection commits, so a steer shows as pending while it does.
     {
       current: { agent: "plan", model: { id: "old", providerID: "old" } },
-      calls: ["admit", "switch-agent", "switch-model", "send"],
+      calls: ["admit", "send"],
     },
-    // An unchanged selection sends without a model request to wait on.
+    // Cached selection does not decide whether the request carries selection intent.
     {
       current: { agent: "build", model: { providerID: "provider-1", id: "model-1", variant: "balanced" } },
       calls: ["admit", "send"],
     },
-    // A prompt commits a staged revert, which would delete the model switch made after its boundary. The revert
-    // settles before admission, whose row it would also delete.
+    // The server commits the staged revert together with selection and admission.
     {
       current: { agent: "plan", model: { id: "old", providerID: "old" }, revert: { messageID: "msg_reverted" } },
-      calls: ["switch-agent", "revert-commit", "switch-model", "admit", "send"],
+      calls: ["admit", "send"],
     },
-  ])("applies the selection before sending one captured value: $calls", async (row) => {
+  ])("sends selection with one captured prompt without separate mutations: $current", async (row) => {
     const state = createMemoryComposerState({ prompt: "ship it" }).capture()
     state.context.add({ type: "file", path: "notes.md", description: "the failing version" })
     const calls: string[] = []
@@ -980,6 +1026,10 @@ describe("Composer submission", () => {
 
     expect(calls).toEqual([...row.calls])
     expect(request.delivery).toBe("steer")
+    expect(request.selection).toEqual({
+      agent: "build",
+      model: { providerID: "provider-1", id: "model-1", variant: "balanced" },
+    })
     expect(request.text).toBe("ship it")
     expect(request.id).toMatch(/^msg_/)
     expect(request.metadata).toMatchObject({
@@ -1049,7 +1099,7 @@ describe("Composer submission", () => {
   })
 
   test.each(["steer", "queue"] as const)(
-    "shows a %s in the session as the composer clears, before its selection commits",
+    "shows a %s in the session as the composer clears, before admission settles",
     async (delivery) => {
       const state = createMemoryComposerState({ prompt: "ship it" }).capture()
       const committed = Promise.withResolvers<void>()
@@ -1060,7 +1110,14 @@ describe("Composer submission", () => {
         calls: [],
         statuses,
         handoff: { set: (handoff) => handoffs.push(handoff), hold() {}, settle() {}, clear() {} },
-        switchModel: async () => committed.promise,
+        prompt: async (request) => {
+          expect(request.selection).toEqual(
+            delivery === "steer"
+              ? { agent: "build", model: { id: "model-1", providerID: "provider-1", variant: "balanced" } }
+              : undefined,
+          )
+          await committed.promise
+        },
       })
 
       await submitInput(
@@ -1241,7 +1298,7 @@ describe("Composer submission", () => {
     const notify = {
       missingSelection() {},
       unqueueable() {},
-      failed: () => (attempts.length === 2 ? first.resolve() : second.resolve()),
+      failed: () => (attempts.length === 1 ? first.resolve() : second.resolve()),
     }
 
     const history: string[] = []
@@ -1252,10 +1309,10 @@ describe("Composer submission", () => {
     await submission.submit(new Event("submit"))
     await second.promise
 
-    expect(attempts).toHaveLength(4)
+    expect(attempts).toHaveLength(2)
     expect(new Set(attempts).size).toBe(1)
-    // A retried admission reuses its submission's selection commit.
-    const submitted = ["admit", "switch-agent", "switch-model", "send", "admit", "send"]
+    // HTTP retry belongs to the data layer; a restored draft reuses the same admission ID.
+    const submitted = ["admit", "send"]
     expect(calls).toEqual([...submitted, ...submitted])
     expect(statuses).toEqual(["running", "idle", "running", "idle"])
     expect(state.current()).toEqual(prompt)
@@ -1399,7 +1456,7 @@ describe("Composer submission", () => {
     await checked.promise
 
     expect(state.current()).toEqual([{ type: "text", content: "", start: 0, end: 0 }])
-    expect(attempts).toHaveLength(2)
+    expect(attempts).toHaveLength(1)
     expect(new Set(attempts).size).toBe(1)
   })
 
@@ -1469,7 +1526,7 @@ describe("Composer submission", () => {
       const run = running()
 
       await run.submit()
-      expect(run.calls).toEqual(["admit", "switch-agent", "switch-model", "send", "accept-send", "background"])
+      expect(run.calls).toEqual(["admit", "send", "accept-send", "background"])
 
       await run.submit()
       expect(run.calls.filter((call) => call === "background")).toHaveLength(1)
@@ -1542,8 +1599,8 @@ describe("Composer submission", () => {
         prompt: async () => {
           attempts.count++
 
-          // The first submission's admission and its single retry both fail.
-          if (attempts.count <= 2) throw new Error("network unavailable")
+          // The admission layer rejects the first submission after exhausting its retries.
+          if (attempts.count === 1) throw new Error("network unavailable")
         },
       })
 
