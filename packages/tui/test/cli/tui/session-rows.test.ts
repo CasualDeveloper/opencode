@@ -3,6 +3,7 @@ import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/clie
 import { createMemo, createRoot } from "solid-js"
 import { createStore } from "solid-js/store"
 import { SessionTurn } from "@opencode/util/session-turn"
+import { append, groupRefs, partitionPending } from "../../../src/routes/session/grouping/session"
 import {
   cacheReuseDrop,
   messageBoundaryIDs,
@@ -13,6 +14,54 @@ import {
 
 const reduceSessionRows = (messages: SessionMessageInfo[], inputs = new Set<string>(), turnTokens = false) =>
   reduceRows(messages, inputs, turnTokens, "medium")
+
+test.each([false, true])("low thinking show=%s preserves live/history order and pending tool disclosure", (show) => {
+  const message = assistant("assistant", [
+    { type: "tool", id: "read", name: "read", state: pending(), time: { created: 1 } },
+    { type: "reasoning", text: "First thought", time: { created: 1, completed: 2 } },
+    { type: "reasoning", text: "Second thought" },
+    { type: "tool", id: "shell", name: "shell", state: pending(), time: { created: 3 } },
+    { type: "tool", id: "question", name: "question", state: pending(), time: { created: 4 } },
+    { type: "text", text: "Answer" },
+  ])
+  const refs = ["read", "reasoning:0", "reasoning:1", "shell", "question", "text:0"]
+  const live: SessionRow[] = []
+  message.content.forEach((part, index) => {
+    append(live, { messageID: message.id, partID: refs[index] }, part, live.length, "low", show)
+    expect(live).toEqual(
+      reduceRows([{ ...message, content: message.content.slice(0, index + 1) }], new Set(), false, "low", show),
+    )
+  })
+  expect(
+    live.map((row) => (row.type === "group" ? row.kind : row.type === "part" ? row.ref.partID : row.type)),
+  ).toEqual(
+    show
+      ? ["activity", "reasoning:0", "reasoning:1", "activity", "question", "text:0"]
+      : ["activity", "question", "text:0"],
+  )
+  partitionPending(live, new Set(["shell"]))
+  const blocked = live.find((row) => row.type === "group" && row.kind === "activity" && row.pending.length)
+  if (blocked?.type !== "group" || blocked.kind !== "activity") throw new Error("Expected pending activity")
+  expect(blocked.pending).toEqual([{ messageID: message.id, partID: "shell" }])
+  expect(groupRefs(blocked).map((ref) => ref.partID)).not.toContain("shell")
+  expect(groupRefs(blocked, true).map((ref) => ref.partID)).toContain("shell")
+  partitionPending(live, new Set())
+  expect(groupRefs(blocked).map((ref) => ref.partID)).toContain("shell")
+})
+
+test.each(["medium", "high"] as const)("thinking visibility preserves %s projection", (verbosity) => {
+  const messages = [
+    assistant("assistant", [
+      { type: "reasoning", text: "Thought one" },
+      { type: "reasoning", text: "Thought two" },
+      { type: "tool", id: "read", name: "read", state: pending(), time: { created: 1 } },
+      { type: "text", text: "Answer" },
+    ]),
+  ]
+  expect(reduceRows(messages, new Set(), false, verbosity, true)).toEqual(
+    reduceRows(messages, new Set(), false, verbosity, false),
+  )
+})
 
 test("indexed tail footer calculations do not subscribe to an unrelated history prefix", () => {
   createRoot((dispose) => {

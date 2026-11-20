@@ -56,6 +56,7 @@ export function createSessionRows(
   const revertBoundary = () => data.session.get(sessionID())?.revert?.messageID
   const turnTokens = () => Boolean(config.data.debug?.turn_tokens)
   const verbosity = () => config.data.session?.verbosity ?? defaultVerbosity
+  const showThinking = () => config.data.session?.thinking === "show"
 
   function reduce() {
     const messages = data.session.message.list(sessionID())
@@ -71,6 +72,7 @@ export function createSessionRows(
       inputs,
       turnTokens(),
       verbosity(),
+      showThinking(),
     )
     partitionPending(rows, pendingPermissions())
     const position = rows.findIndex((row) => row.type === "message" && inputs.has(row.messageID))
@@ -187,7 +189,7 @@ export function createSessionRows(
     ),
   )
 
-  createEffect(on([turnTokens, verbosity], rebuild, { defer: true }))
+  createEffect(on([turnTokens, verbosity, showThinking], rebuild, { defer: true }))
 
   const appendMessage = (messageID: string) =>
     setRows(
@@ -206,7 +208,7 @@ export function createSessionRows(
     setRows(
       produce((draft) => {
         if (!hasPart(draft, ref)) {
-          append(draft, ref, part, queuedStart(draft), verbosity())
+          append(draft, ref, part, queuedStart(draft), verbosity(), showThinking())
           return
         }
         if (part.type !== "reasoning" || part.time?.completed === undefined) return
@@ -349,6 +351,7 @@ export function reduceSessionRows(
   inputs = new Set<string>(),
   turnTokens = false,
   verbosity: Verbosity = defaultVerbosity,
+  showThinking = false,
 ) {
   const isInput = (message: SessionMessageInfo) => inputs.has(message.id)
   const pendingCompactions = messages.filter((message) => message.type === "compaction" && message.status === "running")
@@ -409,7 +412,7 @@ export function reduceSessionRows(
       rows.push({
         entry: { type: "part", ref: { messageID: message.id, partID } },
         part,
-        path: partPath(part, verbosity),
+        path: partPath(part, verbosity, showThinking),
       })
     })
     const terminal = (message.finish && !["tool-calls", "unknown"].includes(message.finish)) || message.error
