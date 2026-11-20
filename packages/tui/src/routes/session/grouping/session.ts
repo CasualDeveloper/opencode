@@ -34,9 +34,7 @@ export const defaultVerbosity: Verbosity = "low"
 export type SessionRow = SessionEntry | SessionGroup
 
 export type AppendPart =
-  | { type: "text" }
-  | { type: "reasoning"; time?: { completed?: number } }
-  | { type: "tool"; name: string }
+  { type: "text" } | { type: "reasoning"; time?: { completed?: number } } | { type: "tool"; name: string }
 
 export type ProjectionEntry = {
   entry: SessionEntry
@@ -79,10 +77,11 @@ const explorationTools = new Set(["read", "glob", "grep", "webfetch", "websearch
 
 /**
  * Grouping path for an assistant part. Adjacent thoughts group, as do reads, searches
- * and web fetches. Low wraps every run of tools and thoughts in one activity summary.
+ * and web fetches. Low folds tools and hidden thoughts into activity summaries.
  * Questions always stand alone.
  */
-export function partPath(part: AppendPart, verbosity: Verbosity): readonly GroupKind[] {
+export function partPath(part: AppendPart, verbosity: Verbosity, showThinking = false): readonly GroupKind[] {
+  if (verbosity === "low" && part.type === "reasoning" && showThinking) return []
   if (part.type === "tool" && part.name.toLowerCase() === "question") return []
   const activity: GroupKind[] = verbosity === "low" && part.type !== "text" ? ["activity"] : []
   if (part.type === "reasoning") return [...activity, "reasoning"]
@@ -113,8 +112,11 @@ export function append(
   part: AppendPart,
   index = rows.length,
   verbosity = defaultVerbosity,
+  showThinking = false,
 ) {
-  const [node] = groupEntries<SessionEntry, GroupKind>([{ type: "part", ref }], () => partPath(part, verbosity))
+  const [node] = groupEntries<SessionEntry, GroupKind>([{ type: "part", ref }], () =>
+    partPath(part, verbosity, showThinking),
+  )
   if (node.type === "entry") {
     completePrevious(rows, index)
     rows.splice(index, 0, node.entry)
