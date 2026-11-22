@@ -1331,8 +1331,7 @@ Earlier work
       ],
     ])
 
-    // A failed stream keeps only what had happened by its last call that ran, whether it was retried,
-    // retries ran out, or Esc landed during the retry wait. With no call that ran, nothing is kept.
+    // A terminal failure keeps the visible reply, including text after the last local call.
     const failedTurn = (value: string, content: SessionMessage.Assistant["content"]) =>
       SessionMessage.Assistant.make({
         id: id(value),
@@ -1373,10 +1372,16 @@ Earlier work
       Model.Ref.make({ id: Model.ID.make("same"), providerID: Provider.ID.make("provider") }),
     )
     expect(failedTurns.map((item) => ({ role: item.role, types: item.content.map((part) => part.type) }))).toEqual([
-      { role: "assistant", types: ["text", "tool-call"] },
+      { role: "assistant", types: ["text"] },
+      { role: "assistant", types: ["text", "tool-call", "text"] },
       { role: "tool", types: ["tool-result"] },
     ])
     expect(failedTurns[0]?.content[0]).toEqual({
+      type: "text",
+      text: "Partial visible answer",
+      providerMetadata: undefined,
+    })
+    expect(failedTurns[1]?.content[0]).toEqual({
       type: "text",
       text: "Reading first",
       providerMetadata: { provider: { phase: "commentary" } },

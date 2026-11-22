@@ -146,29 +146,27 @@ const ranTool = (item: SessionMessage.AssistantContent) =>
 const assistant = (message: SessionMessage.Assistant, model: Model.Ref, providerMetadataKey: string) => {
   const sameProvider = message.model.providerID === model.providerID
   const sameModel = sameProvider && message.model.id === model.id
-  // A failed stream is retried from what had already happened: the local calls that ran and everything
-  // before them. Cutting after a local call's result keeps the retried request from ending on an assistant
-  // reply; hosted calls after it are provider-side reads, so the retry can redo them.
-  const kept =
+  // Failed streams keep the work through the last local call that ran. Beyond it, only the
+  // visible reply belongs in history; an already scheduled retry still resumes from the tool boundary.
+  const workEnd =
     message.error === undefined || message.error.type === "aborted"
-      ? message.content
-      : message.content.slice(
-          0,
-          message.content.findLastIndex((item) => item.type === "tool" && item.executed !== true && ranTool(item)) + 1,
-        )
+      ? message.content.length - 1
+      : message.content.findLastIndex((item) => item.type === "tool" && item.executed !== true && ranTool(item))
   // A stream cut by Esc, a crash or a failure may end mid-block, so its last block's provider state is not
   // replayed, and reasoning is only replayed once the model moved on to output. Calls it cut off before
   // they ran are dropped; input errors stay so the model can reissue the call.
   const cut = message.error !== undefined || message.finish === undefined
   const tail = cut ? message.content.at(-1) : undefined
   const items = cut
-    ? kept.filter(
-        (item) =>
+    ? message.content.filter((item, index) => {
+        if (index > workEnd) return item.type === "text" && message.retry === undefined
+        return (
           item.type !== "tool" ||
           ranTool(item) ||
-          (item.state.status === "error" && item.state.error.type.startsWith("tool.input")),
-      )
-    : kept
+          (item.state.status === "error" && item.state.error.type.startsWith("tool.input"))
+        )
+      })
+    : message.content
   const content = items.flatMap((item, index): Array<AssistantMessage["content"][number]> => {
     if (item.type === "text")
       return [
