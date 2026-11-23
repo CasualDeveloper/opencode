@@ -1,5 +1,5 @@
 import type { WidthMethod } from "@opentui/core"
-import { appendPrompt, type PromptInfo } from "../../prompt/history"
+import { appendPrompt, isDuplicateEntry, type PromptInfo } from "../../prompt/history"
 import type { PromptRef } from "./index"
 
 // Holds one in-progress draft per tab across Prompt remounts. A draft is
@@ -44,4 +44,27 @@ export function appendToSessionPrompt(sessionID: string, prompt: PromptInfo, wid
   composer.setMode("normal")
   composer.set(appendPrompt(composer.current, prompt, widthMethod))
   return composer
+}
+
+export function hasDraftContent(prompt: PromptInfo) {
+  return !!(
+    prompt.text ||
+    prompt.files?.length ||
+    prompt.agents?.length ||
+    prompt.skills?.length ||
+    prompt.pasted.length
+  )
+}
+
+export function restoreDraft(sessionID: string, entry: DraftEntry) {
+  const current = byTab.get(sessionID)
+  if (current && hasDraftContent(current.prompt)) return false
+  byTab.set(sessionID, entry)
+  return true
+}
+
+export function clearDraft(sessionID: string, prompt: PromptInfo) {
+  if (!isDuplicateEntry(byTab.get(sessionID)?.prompt, prompt)) return false
+  byTab.delete(sessionID)
+  return true
 }

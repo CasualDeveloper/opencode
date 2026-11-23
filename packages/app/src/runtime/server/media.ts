@@ -12,14 +12,15 @@ export type MediaCache = {
 // were given without releasing it, so revoking one earlier would break an image that is still on screen.
 export function createMediaCache(getApi: () => Pick<OpenCodeClient, "experimental">): MediaCache {
   const urls = new Map<string, string>()
-  const inflight = new Map<string, Promise<string | undefined>>()
+  const inflight = new Map<string, ReturnType<typeof start>>()
   let disposed = false
 
-  const fetchObjectUrl = (hash: string, mime: string) =>
-    getApi()
-      .experimental.media.get({ hash })
+  function start(hash: string, mime: string) {
+    const controller = new AbortController()
+    const promise = getApi()
+      .experimental.media.get({ hash }, { signal: controller.signal })
       .then((bytes) => {
-        if (disposed) return undefined
+        if (disposed || controller.signal.aborted) return undefined
 
         const url =
           urls.get(hash) ??
@@ -29,10 +30,18 @@ export function createMediaCache(getApi: () => Pick<OpenCodeClient, "experimenta
 
         return url
       })
-      .finally(() => inflight.delete(hash))
+      .catch((error) => {
+        if (!controller.signal.aborted) throw error
+        return undefined
+      })
+      .finally(() => {
+        if (inflight.get(hash)?.promise === promise) inflight.delete(hash)
+      })
+    return { controller, promise, readers: 0 }
+  }
 
   const read = (hash: string, mime: string) => {
-    const pending = inflight.get(hash) ?? fetchObjectUrl(hash, mime)
+    const pending = inflight.get(hash) ?? start(hash, mime)
 
     inflight.set(hash, pending)
 
@@ -57,14 +66,20 @@ export function createMediaCache(getApi: () => Pick<OpenCodeClient, "experimenta
 
       if (cached) return Promise.resolve(cached)
       const pending = read(hash, mime)
+      pending.readers++
+      const release = () => {
+        if (--pending.readers !== 0 || inflight.get(hash) !== pending) return
+        inflight.delete(hash)
+        pending.controller.abort()
+      }
 
-      if (!signal) return pending
+      if (!signal) return pending.promise.finally(release)
 
       return new Promise<string | undefined>((resolve, reject) => {
         const onAbort = () => resolve(undefined)
 
         signal.addEventListener("abort", onAbort, { once: true })
-        pending.then(
+        pending.promise.then(
           (url) => {
             signal.removeEventListener("abort", onAbort)
             resolve(signal.aborted ? undefined : url)
@@ -76,10 +91,11 @@ export function createMediaCache(getApi: () => Pick<OpenCodeClient, "experimenta
             else reject(error)
           },
         )
-      })
+      }).finally(release)
     },
     dispose() {
       disposed = true
+      inflight.forEach((pending) => pending.controller.abort())
       inflight.clear()
       urls.forEach((url) => URL.revokeObjectURL(url))
       urls.clear()
