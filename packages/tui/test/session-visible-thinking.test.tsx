@@ -4,7 +4,14 @@ import { createAppFixture } from "./fixture/app"
 import { waitForHighlightedFrame } from "./fixture/frame"
 import { directory, json } from "./fixture/tui-client"
 
-test.each([100, 44])("low thinking stays inline through history, Ctrl-T and streaming at width %s", async (width) => {
+const cases = [
+  ["low", 100],
+  ["low", 44],
+  ["medium", 100],
+  ["high", 100],
+] as const
+
+test.each(cases)("%s keeps past and streaming thoughts inline at width %i", async (verbosity, width) => {
   const session = {
     id: "ses_visible_thinking",
     title: "Visible thinking",
@@ -37,17 +44,18 @@ test.each([100, 44])("low thinking stays inline through history, Ctrl-T and stre
     content: [
       tool("before"),
       { type: "reasoning", text: "INLINE_THOUGHT", time: { created: 3, completed: 4 } },
+      { type: "reasoning", text: "NEXT_THOUGHT", time: { created: 4, completed: 5 } },
       tool("after"),
     ],
   }
   await using setup = await createAppFixture({
     width,
-    height: 40,
+    height: 60,
     config: {
       animations: false,
       tabs: { mode: "off" },
       keybinds: { "session.toggle.thinking": "ctrl+t", "variant.cycle": "none" },
-      session: { sidebar: "hide", verbosity: "low", thinking: "show" },
+      session: { sidebar: "hide", verbosity, thinking: "show" },
     },
     args: { sessionID: session.id },
     fetch: (url) => {
@@ -65,41 +73,45 @@ test.each([100, 44])("low thinking stays inline through history, Ctrl-T and stre
     },
   })
   await setup.ready
-  const frame = await waitForHighlightedFrame(setup, (frame) => frame.includes("INLINE_THOUGHT"))
-  expect(frame.match(/\+ 1 command/g)).toHaveLength(2)
-  expect(frame.indexOf("+ 1 command")).toBeLessThan(frame.indexOf("INLINE_THOUGHT"))
-  expect(frame.lastIndexOf("+ 1 command")).toBeGreaterThan(frame.indexOf("INLINE_THOUGHT"))
-  expect(frame).not.toContain("echo before")
-  expect(frame).not.toContain("echo after")
+  const frame = await waitForHighlightedFrame(
+    setup,
+    (frame) => frame.includes("INLINE_THOUGHT") && frame.includes("NEXT_THOUGHT"),
+  )
+  expect(frame.indexOf("INLINE_THOUGHT")).toBeLessThan(frame.indexOf("NEXT_THOUGHT"))
+  if (verbosity === "low") {
+    expect(frame.match(/\+ 1 command/g)).toHaveLength(2)
+    expect(frame.indexOf("+ 1 command")).toBeLessThan(frame.indexOf("INLINE_THOUGHT"))
+    expect(frame.lastIndexOf("+ 1 command")).toBeGreaterThan(frame.indexOf("NEXT_THOUGHT"))
+    expect(frame).not.toContain("echo before")
+    expect(frame).not.toContain("echo after")
 
-  setup.mockInput.pressKey("t", { ctrl: true })
-  await setup.waitForFrame((frame) => frame.includes("+ 2 commands") && !frame.includes("INLINE_THOUGHT"))
-  expect(setup.config().session?.thinking).toBe("hide")
-  setup.mockInput.pressKey("t", { ctrl: true })
-  await waitForHighlightedFrame(setup, (frame) => frame.includes("INLINE_THOUGHT"))
-  expect(setup.config().session?.thinking).toBe("show")
+    setup.mockInput.pressKey("t", { ctrl: true })
+    await setup.waitForFrame((frame) => frame.includes("+ 2 commands") && !frame.includes("INLINE_THOUGHT"))
+    setup.mockInput.pressKey("t", { ctrl: true })
+    await waitForHighlightedFrame(setup, (frame) => frame.includes("INLINE_THOUGHT"))
 
-  const row = setup
-    .captureCharFrame()
-    .split("\n")
-    .findIndex((line) => line.includes("+ 1 command"))
-  await setup.mockMouse.click(6, row)
-  await waitForHighlightedFrame(setup, (frame) => frame.includes("echo before"))
-  expect(setup.captureCharFrame()).toContain("INLINE_THOUGHT")
-  expect(setup.captureCharFrame()).not.toContain("echo after")
+    const row = setup
+      .captureCharFrame()
+      .split("\n")
+      .findIndex((line) => line.includes("+ 1 command"))
+    await setup.mockMouse.click(6, row)
+    await waitForHighlightedFrame(setup, (frame) => frame.includes("echo before"))
+    expect(setup.captureCharFrame()).toContain("INLINE_THOUGHT")
+    expect(setup.captureCharFrame()).not.toContain("echo after")
+  }
 
   setup.events.emit({
     id: "evt_thought_started",
     created: 5,
     type: "session.reasoning.started",
     durable: { aggregateID: session.id, seq: 1, version: 1 },
-    data: { sessionID: session.id, assistantMessageID: message.id, ordinal: 1 },
+    data: { sessionID: session.id, assistantMessageID: message.id, ordinal: 2 },
   })
   setup.events.emit({
     id: "evt_thought_delta",
     created: 5,
     type: "session.reasoning.delta",
-    data: { sessionID: session.id, assistantMessageID: message.id, ordinal: 1, delta: "STREAM_THOUGHT\n\n" },
+    data: { sessionID: session.id, assistantMessageID: message.id, ordinal: 2, delta: "STREAM_THOUGHT\n\n" },
   })
   await waitForHighlightedFrame(setup, (frame) => frame.includes("STREAM_THOUGHT"))
   setup.events.emit({
@@ -107,14 +119,16 @@ test.each([100, 44])("low thinking stays inline through history, Ctrl-T and stre
     created: 6,
     type: "session.reasoning.ended",
     durable: { aggregateID: session.id, seq: 2, version: 1 },
-    data: { sessionID: session.id, assistantMessageID: message.id, ordinal: 1, text: "STREAM_THOUGHT\n\nLAST_LINE" },
+    data: { sessionID: session.id, assistantMessageID: message.id, ordinal: 2, text: "STREAM_THOUGHT\n\nLAST_LINE" },
   })
   await waitForHighlightedFrame(setup, (frame) => frame.includes("LAST_LINE"))
-  expect(setup.captureCharFrame().indexOf("INLINE_THOUGHT")).toBeLessThan(
-    setup.captureCharFrame().indexOf("STREAM_THOUGHT"),
-  )
+  const complete = setup.captureCharFrame()
+  expect(complete).toContain("NEXT_THOUGHT")
+  expect(complete.indexOf("NEXT_THOUGHT")).toBeLessThan(complete.indexOf("STREAM_THOUGHT"))
   setup.mockInput.pressKey("t", { ctrl: true })
   await setup.waitForFrame((frame) => !frame.includes("STREAM_THOUGHT") && !frame.includes("INLINE_THOUGHT"))
+  expect(setup.config().session?.thinking).toBe("hide")
   setup.mockInput.pressKey("t", { ctrl: true })
   await waitForHighlightedFrame(setup, (frame) => frame.includes("INLINE_THOUGHT") && frame.includes("LAST_LINE"))
+  expect(setup.config().session?.thinking).toBe("show")
 })
