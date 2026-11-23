@@ -2106,9 +2106,7 @@ describe("SessionRunnerLLM", () => {
     expect(userTexts(last)).toEqual(["First", "Fourth"])
     expect(last.system.map((part) => part.text).join("\n")).not.toContain("Entered mode")
     // Clients still see every message; only the model context hides the stale update.
-    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([
-      { text: "Entered mode" },
-    ])
+    expect((yield* s.messages).filter((message) => message.type === "system")).toMatchObject([{ text: "Entered mode" }])
   })
 
   scenario("uses the selected model family prompt when the agent does not override it", function* (s) {
@@ -6469,13 +6467,12 @@ describe("SessionRunnerLLM", () => {
   for (const failed of [
     { name: "before output", stream: () => Stream.fail(providerUnavailable()) },
     {
-      name: "after output",
+      name: "during reasoning",
       stream: () =>
         TestLLM.failAfter(
           providerUnavailable(),
           LLMEvent.stepStart({ index: 0 }),
-          LLMEvent.textStart({ id: "traced-partial" }),
-          LLMEvent.textDelta({ id: "traced-partial", text: "Partial" }),
+          LLMEvent.reasoningStart({ id: "traced-partial" }),
         ),
     },
   ])
@@ -6673,70 +6670,49 @@ describe("SessionRunnerLLM", () => {
     })
   }
 
-  scenario("retries an incomplete stream cleanly from the prompt when no tool ran", function* (s) {
+  scenario("keeps an interrupted reply for an explicit continuation", function* (s) {
     const failure = incompleteStream()
-    yield* s.admit("Continue partial output")
+    const prefix = "First, open the file.\nThen look for the "
     yield* s.llm.push(
       TestLLM.failAfter(
         failure,
         LLMEvent.stepStart({ index: 0 }),
-        LLMEvent.textStart({ id: "partial-rate-limit" }),
-        LLMEvent.textDelta({ id: "partial-rate-limit", text: "Partial" }),
+        LLMEvent.textStart({ id: "answer" }),
+        LLMEvent.textDelta({ id: "answer", text: prefix }),
       ),
     )
-    yield* s.llm.push(TestLLM.text("Recovered", "continued-text"))
 
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    yield* Queue.take(scheduled)
-    yield* TestClock.adjust("2400 millis")
-    yield* Fiber.join(run)
+    expect(yield* s.runPrompt("Show me how").pipe(Effect.flip)).toBe(failure)
+    expect(s.requests).toHaveLength(1)
+    expect(yield* recordedEventTypes(sessionID)).not.toContain("session.retry.scheduled.1")
+    yield* replaySessionProjection(sessionID)
+    expect(yield* s.context).toMatchObject([
+      Expected.user("Show me how"),
+      Expected.assistant({ finish: "error", error: { type: "provider.invalid-output" } }, [Expected.text(prefix)]),
+    ])
 
+    yield* s.llm.push(TestLLM.text("setting.", "continued-text"))
+    yield* s.runPrompt("continue")
     expect(s.requests).toHaveLength(2)
     expect(s.requests[1]?.messages).toMatchObject([
-      { role: "user", content: [{ type: "text", text: "Continue partial output" }] },
+      { role: "user", content: [{ type: "text", text: "Show me how" }] },
+      { role: "assistant", content: [{ type: "text", text: prefix }] },
+      { role: "user", content: [{ type: "text", text: "continue" }] },
     ])
-    const context = yield* s.context
-    expect(context).toMatchObject([
-      Expected.user("Continue partial output"),
-      Expected.assistant({ finish: "error", error: { type: "provider.invalid-output" } }, [Expected.text("Partial")]),
-      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
-    ])
-    const assistants = context.filter((message) => message.type === "assistant")
-    expect(new Set(assistants.map((message) => message.id)).size).toBe(2)
-    expect(context.some((message) => message.type === "synthetic")).toBe(false)
-    expect(yield* recordedEventTypes(sessionID)).toContain("session.retry.scheduled.1")
-    yield* replaySessionProjection(sessionID)
-    expect(yield* s.context).toMatchObject(context)
   })
 
-  scenario("retries an unknown finish cleanly after observable text when no tool ran", function* (s) {
-    yield* s.admit("Continue unknown finish")
+  scenario("stops on an unknown finish after text supplied at block end", function* (s) {
     yield* s.llm.push([
       LLMEvent.stepStart({ index: 0 }),
       LLMEvent.textStart({ id: "unknown-partial" }),
-      LLMEvent.textDelta({ id: "unknown-partial", text: "Partial" }),
-      LLMEvent.textEnd({ id: "unknown-partial" }),
+      LLMEvent.textEnd({ id: "unknown-partial", text: "Partial" }),
       LLMEvent.stepFinish({ index: 0, reason: { normalized: "unknown" } }),
       LLMEvent.finish({ reason: { normalized: "unknown" } }),
     ])
-    yield* s.llm.push(TestLLM.text("Recovered", "unknown-continuation"))
-
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    yield* Queue.take(scheduled)
-    yield* TestClock.adjust("2400 millis")
-    yield* Fiber.join(run)
-
-    expect(s.requests).toHaveLength(2)
-    expect(s.requests[1]?.messages).toMatchObject([
-      { role: "user", content: [{ type: "text", text: "Continue unknown finish" }] },
-    ])
-    expect(yield* s.context).toMatchObject([
-      { type: "user" },
-      Expected.assistant({ finish: "error" }, [Expected.text("Partial")]),
-      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
-    ])
+    expect(yield* s.runPrompt("Continue unknown finish").pipe(Effect.flip)).toMatchObject({
+      error: { type: "provider.invalid-output" },
+    })
+    expect(s.requests).toHaveLength(1)
   })
 
   scenario("retries after a mid-stream rate limit honoring retry-after without partial text", function* (s) {
@@ -6746,7 +6722,7 @@ describe("SessionRunnerLLM", () => {
         rateLimited(5_000),
         LLMEvent.stepStart({ index: 0 }),
         LLMEvent.textStart({ id: "rate-limited-partial" }),
-        LLMEvent.textDelta({ id: "rate-limited-partial", text: "Partial" }),
+        LLMEvent.textDelta({ id: "rate-limited-partial", text: "\n" }),
       ),
     )
     yield* s.llm.push(TestLLM.text("Recovered", "rate-limit-continuation"))
@@ -6766,39 +6742,44 @@ describe("SessionRunnerLLM", () => {
     expect(yield* recordedEventTypes(sessionID)).toContain("session.retry.scheduled.1")
     expect(yield* s.context).toMatchObject([
       Expected.user("Continue after rate limit"),
-      Expected.assistant({ finish: "error", error: { type: "provider.rate-limit" } }, [Expected.text("Partial")]),
+      Expected.assistant({ finish: "error", error: { type: "provider.rate-limit" } }, [Expected.text("\n")]),
       Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
     ])
   })
 
-  scenario("retries after an unrecognized mid-stream provider failure when no tool ran", function* (s) {
+  scenario("keeps visible text and settled work but not incomplete calls on continuation", function* (s) {
     const failure = new AIError({ reason: new UnknownProviderError({ message: "Provider returned error" }) })
     yield* s.admit("Continue after unknown failure")
     yield* s.llm.push(
       TestLLM.failAfter(
         failure,
         LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolCall({ id: "settled", name: "echo", input: { text: "done" } }),
         LLMEvent.textStart({ id: "unknown-failure-partial" }),
         LLMEvent.textDelta({ id: "unknown-failure-partial", text: "Partial" }),
+        LLMEvent.toolInputStart({ id: "unfinished", name: "echo" }),
+        LLMEvent.toolInputDelta({ id: "unfinished", name: "echo", text: '{"text":' }),
       ),
     )
     yield* s.llm.push(TestLLM.text("Recovered", "unknown-failure-continuation"))
 
-    const scheduled = yield* subscribeRetries(s)
-    const run = yield* s.resume.pipe(Effect.forkChild)
-    yield* Queue.take(scheduled)
-    yield* TestClock.adjust("2400 millis")
-    yield* Fiber.join(run)
-
+    expect(yield* s.resume.pipe(Effect.flip)).toBe(failure)
+    expect(s.requests).toHaveLength(1)
+    yield* s.runPrompt("continue")
     expect(s.requests).toHaveLength(2)
     expect(s.requests[1]?.messages).toMatchObject([
       { role: "user", content: [{ type: "text", text: "Continue after unknown failure" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", id: "settled" },
+          { type: "text", text: "Partial" },
+        ],
+      },
+      { role: "tool", content: [{ type: "tool-result", id: "settled" }] },
+      { role: "user", content: [{ type: "text", text: "continue" }] },
     ])
-    expect(yield* s.context).toMatchObject([
-      Expected.user("Continue after unknown failure"),
-      Expected.assistant({ finish: "error", error: { type: "provider.unknown" } }, [Expected.text("Partial")]),
-      Expected.assistant({ finish: "stop" }, [Expected.text("Recovered")]),
-    ])
+    expect(s.executions).toEqual(["done"])
   })
 
   scenario("drops interrupted reasoning and retries cleanly without continuation prompt", function* (s) {
@@ -6938,7 +6919,6 @@ describe("SessionRunnerLLM", () => {
         failure,
         LLMEvent.stepStart({ index: 0 }),
         LLMEvent.textStart({ id: "mixed-partial" }),
-        LLMEvent.textDelta({ id: "mixed-partial", text: "Partial" }),
       )
       // Alternate transparent failures and failures after output until the retry allowance is spent.
       const outcomes = RETRY_GAPS.map((_, index) => (index % 2 === 0 ? Stream.fail(failure) : partial))
@@ -6974,8 +6954,8 @@ describe("SessionRunnerLLM", () => {
       TestLLM.failAfter(
         failure,
         LLMEvent.stepStart({ index: 0 }),
-        LLMEvent.textStart({ id: "partial-exhaustion" }),
-        LLMEvent.textDelta({ id: "partial-exhaustion", text: "Partial" }),
+        LLMEvent.reasoningStart({ id: "partial-exhaustion" }),
+        LLMEvent.reasoningDelta({ id: "partial-exhaustion", text: "Partial thought" }),
       ),
     )
 

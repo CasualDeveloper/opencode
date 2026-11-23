@@ -67,8 +67,10 @@ const INPUT_FAILURES = {
 
 /** Immutable fold of the durable facts a step's writer has recorded so far. */
 export interface StepRecord {
-  /** The model produced visible output this attempt, which bars transparent retries and overflow recovery. */
+  /** A text, reasoning or tool block started, which bars transparent retries and overflow recovery. */
   readonly outputStarted: boolean
+  /** The flushed reply contains answer text a user can continue. */
+  readonly hasVisibleText: boolean
   readonly providerFailed: boolean
   /** The step's recorded assistant failure, if any. */
   readonly failure?: SessionError.Error
@@ -124,6 +126,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
   let stepStarted = false
   let providerFailed = false
   let outputStarted = false
+  let hasVisibleText = false
   let stepFailure: SessionError.Error | undefined
   let stepSettlement: StepRecord["finish"]
 
@@ -258,6 +261,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
             text: value,
             native,
           })
+          if (events === SessionEvent.Text && value.trim() !== "") hasVisibleText = true
         }),
       (_id, value, ordinal) =>
         Effect.gen(function* () {
@@ -614,6 +618,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     /** Immutable snapshot of everything recorded for this step so far. */
     record: (): StepRecord => ({
       outputStarted,
+      hasVisibleText,
       providerFailed,
       failure: stepFailure,
       finish: stepSettlement,
